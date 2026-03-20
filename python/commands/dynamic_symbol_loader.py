@@ -14,6 +14,8 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from commands.grid_utils import snap_to_grid
+
 logger = logging.getLogger("kicad_interface")
 
 
@@ -507,6 +509,10 @@ class DynamicSymbolLoader:
         """
         if project_path:
             self.project_path = project_path
+
+        # Snap placement coordinates to the schematic grid
+        x, y = snap_to_grid(x, y)
+
         # Ensure symbol definition is in lib_symbols
         self.inject_symbol_into_schematic(schematic_path, library_name, symbol_name)
 

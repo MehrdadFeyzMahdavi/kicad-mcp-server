@@ -1,25 +1,47 @@
 """
 Wire Manager for KiCad Schematics
 
-Handles wire creation using S-expression manipulation, similar to dynamic symbol loading.
-kicad-skip's wire API doesn't support creating wires with standard parameters, so we
-manipulate the .kicad_sch file directly.
+Handles wire creation and deletion using text manipulation to preserve file formatting.
+All writes use direct text insertion/removal (never sexpdata.dumps()) to avoid
+corrupting existing content such as symbol definitions and UUID formatting.
 """
 
+import re
 import uuid
 import logging
-import math
-import tempfile
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
-import sexpdata
-from sexpdata import Symbol
+from typing import List, Optional
+
+from commands.grid_utils import snap_to_grid, fmt_coord as _fmt, find_balanced_end as _find_balanced_end
 
 logger = logging.getLogger("kicad_interface")
 
 
+def _remove_block_from_text(content: str, block_start: int, block_end: int) -> str:
+    """Remove a block and its surrounding whitespace from the text."""
+    # Find start of the line containing block_start
+    line_start = content.rfind('\n', 0, block_start)
+    if line_start == -1:
+        remove_start = 0
+    else:
+        prefix = content[line_start + 1:block_start]
+        if prefix.strip() == '':
+            remove_start = line_start + 1
+        else:
+            remove_start = block_start
+
+    # Skip trailing whitespace + one newline
+    remove_end = block_end
+    while remove_end < len(content) and content[remove_end] in (' ', '\t'):
+        remove_end += 1
+    if remove_end < len(content) and content[remove_end] == '\n':
+        remove_end += 1
+
+    return content[:remove_start] + content[remove_end:]
+
+
 class WireManager:
-    """Manage wires in KiCad schematics using S-expression manipulation"""
+    """Manage wires in KiCad schematics using text manipulation"""
 
     @staticmethod
     def add_wire(
@@ -30,7 +52,7 @@ class WireManager:
         stroke_type: str = "default",
     ) -> bool:
         """
-        Add a wire to the schematic using S-expression manipulation
+        Add a wire to the schematic using text manipulation.
 
         Args:
             schematic_path: Path to .kicad_sch file
@@ -43,60 +65,39 @@ class WireManager:
             True if successful, False otherwise
         """
         try:
-            # Read schematic
             with open(schematic_path, "r", encoding="utf-8") as f:
-                sch_content = f.read()
+                content = f.read()
 
-            sch_data = sexpdata.loads(sch_content)
+            sp = snap_to_grid(start_point[0], start_point[1])
+            ep = snap_to_grid(end_point[0], end_point[1])
+            x1, y1 = _fmt(sp[0]), _fmt(sp[1])
+            x2, y2 = _fmt(ep[0]), _fmt(ep[1])
+            w = _fmt(stroke_width)
+            new_uuid = str(uuid.uuid4())
 
-            # Create wire S-expression
-            # Format: (wire (pts (xy x1 y1) (xy x2 y2)) (stroke (width N) (type default)) (uuid ...))
-            wire_sexp = [
-                Symbol("wire"),
-                [
-                    Symbol("pts"),
-                    [Symbol("xy"), start_point[0], start_point[1]],
-                    [Symbol("xy"), end_point[0], end_point[1]],
-                ],
-                [
-                    Symbol("stroke"),
-                    [Symbol("width"), stroke_width],
-                    [Symbol("type"), Symbol(stroke_type)],
-                ],
-                [Symbol("uuid"), str(uuid.uuid4())],
-            ]
+            wire_block = (
+                f"(wire (pts (xy {x1} {y1}) (xy {x2} {y2}))\n"
+                f"    (stroke (width {w}) (type {stroke_type}))\n"
+                f"    (uuid \"{new_uuid}\")\n"
+                f"  )"
+            )
 
-            # Find insertion point (before sheet_instances)
-            sheet_instances_index = None
-            for i, item in enumerate(sch_data):
-                if (
-                    isinstance(item, list)
-                    and len(item) > 0
-                    and item[0] == Symbol("sheet_instances")
-                ):
-                    sheet_instances_index = i
-                    break
-
-            if sheet_instances_index is None:
+            insert_at = content.rfind("(sheet_instances")
+            if insert_at == -1:
                 logger.error("No sheet_instances section found in schematic")
                 return False
 
-            # Insert wire before sheet_instances
-            sch_data.insert(sheet_instances_index, wire_sexp)
-            logger.info(f"Injected wire from {start_point} to {end_point}")
+            content = content[:insert_at] + wire_block + "\n  " + content[insert_at:]
 
-            # Write back
             with open(schematic_path, "w", encoding="utf-8") as f:
-                output = sexpdata.dumps(sch_data)
-                f.write(output)
+                f.write(content)
 
-            logger.info(f"Successfully added wire to {schematic_path.name}")
+            logger.info(f"Successfully added wire from {start_point} to {end_point}")
             return True
 
         except Exception as e:
             logger.error(f"Error adding wire: {e}")
             import traceback
-
             logger.error(traceback.format_exc())
             return False
 
@@ -108,7 +109,7 @@ class WireManager:
         stroke_type: str = "default",
     ) -> bool:
         """
-        Add a multi-segment wire (polyline) to the schematic
+        Add a multi-segment wire path as individual 2-point wire segments.
 
         Args:
             schematic_path: Path to .kicad_sch file
@@ -124,60 +125,44 @@ class WireManager:
                 logger.error("Polyline requires at least 2 points")
                 return False
 
-            # Read schematic
             with open(schematic_path, "r", encoding="utf-8") as f:
-                sch_content = f.read()
+                content = f.read()
 
-            sch_data = sexpdata.loads(sch_content)
+            w = _fmt(stroke_width)
+            snapped = [snap_to_grid(p[0], p[1]) for p in points]
+            segments = []
+            for i in range(len(snapped) - 1):
+                x1, y1 = _fmt(snapped[i][0]), _fmt(snapped[i][1])
+                x2, y2 = _fmt(snapped[i + 1][0]), _fmt(snapped[i + 1][1])
+                new_uuid = str(uuid.uuid4())
+                segment = (
+                    f"(wire (pts (xy {x1} {y1}) (xy {x2} {y2}))\n"
+                    f"    (stroke (width {w}) (type {stroke_type}))\n"
+                    f"    (uuid \"{new_uuid}\")\n"
+                    f"  )"
+                )
+                segments.append(segment)
 
-            # Create pts list
-            pts_list = [Symbol("pts")]
-            for point in points:
-                pts_list.append([Symbol("xy"), point[0], point[1]])
-
-            # Create wire S-expression with multiple points
-            wire_sexp = [
-                Symbol("wire"),
-                pts_list,
-                [
-                    Symbol("stroke"),
-                    [Symbol("width"), stroke_width],
-                    [Symbol("type"), Symbol(stroke_type)],
-                ],
-                [Symbol("uuid"), str(uuid.uuid4())],
-            ]
-
-            # Find insertion point
-            sheet_instances_index = None
-            for i, item in enumerate(sch_data):
-                if (
-                    isinstance(item, list)
-                    and len(item) > 0
-                    and item[0] == Symbol("sheet_instances")
-                ):
-                    sheet_instances_index = i
-                    break
-
-            if sheet_instances_index is None:
+            insert_at = content.rfind("(sheet_instances")
+            if insert_at == -1:
                 logger.error("No sheet_instances section found in schematic")
                 return False
 
-            # Insert wire
-            sch_data.insert(sheet_instances_index, wire_sexp)
-            logger.info(f"Injected polyline wire with {len(points)} points")
+            all_blocks = "\n  ".join(segments)
+            content = content[:insert_at] + all_blocks + "\n  " + content[insert_at:]
 
-            # Write back
             with open(schematic_path, "w", encoding="utf-8") as f:
-                output = sexpdata.dumps(sch_data)
-                f.write(output)
+                f.write(content)
 
-            logger.info(f"Successfully added polyline wire to {schematic_path.name}")
+            logger.info(
+                f"Successfully added polyline wire with {len(points)} points "
+                f"({len(segments)} segments)"
+            )
             return True
 
         except Exception as e:
             logger.error(f"Error adding polyline wire: {e}")
             import traceback
-
             logger.error(traceback.format_exc())
             return False
 
@@ -190,7 +175,7 @@ class WireManager:
         orientation: int = 0,
     ) -> bool:
         """
-        Add a net label to the schematic
+        Add a net label to the schematic using text manipulation.
 
         Args:
             schematic_path: Path to .kicad_sch file
@@ -203,58 +188,37 @@ class WireManager:
             True if successful, False otherwise
         """
         try:
-            # Read schematic
             with open(schematic_path, "r", encoding="utf-8") as f:
-                sch_content = f.read()
+                content = f.read()
 
-            sch_data = sexpdata.loads(sch_content)
+            sp = snap_to_grid(position[0], position[1])
+            x, y = _fmt(sp[0]), _fmt(sp[1])
+            new_uuid = str(uuid.uuid4())
 
-            # Create label S-expression
-            # Format: (label "TEXT" (at x y angle) (effects (font (size 1.27 1.27))))
-            label_sexp = [
-                Symbol(label_type),
-                text,
-                [Symbol("at"), position[0], position[1], orientation],
-                [Symbol("fields_autoplaced"), Symbol("yes")],
-                [
-                    Symbol("effects"),
-                    [Symbol("font"), [Symbol("size"), 1.27, 1.27]],
-                    [Symbol("justify"), Symbol("left"), Symbol("bottom")],
-                ],
-                [Symbol("uuid"), str(uuid.uuid4())],
-            ]
+            label_block = (
+                f"({label_type} \"{text}\" (at {x} {y} {orientation})\n"
+                f"    (fields_autoplaced yes)\n"
+                f"    (effects (font (size 1.27 1.27)) (justify left bottom))\n"
+                f"    (uuid \"{new_uuid}\")\n"
+                f"  )"
+            )
 
-            # Find insertion point
-            sheet_instances_index = None
-            for i, item in enumerate(sch_data):
-                if (
-                    isinstance(item, list)
-                    and len(item) > 0
-                    and item[0] == Symbol("sheet_instances")
-                ):
-                    sheet_instances_index = i
-                    break
-
-            if sheet_instances_index is None:
+            insert_at = content.rfind("(sheet_instances")
+            if insert_at == -1:
                 logger.error("No sheet_instances section found in schematic")
                 return False
 
-            # Insert label
-            sch_data.insert(sheet_instances_index, label_sexp)
-            logger.info(f"Injected label '{text}' at {position}")
+            content = content[:insert_at] + label_block + "\n  " + content[insert_at:]
 
-            # Write back
             with open(schematic_path, "w", encoding="utf-8") as f:
-                output = sexpdata.dumps(sch_data)
-                f.write(output)
+                f.write(content)
 
-            logger.info(f"Successfully added label to {schematic_path.name}")
+            logger.info(f"Successfully added label '{text}' at {position}")
             return True
 
         except Exception as e:
             logger.error(f"Error adding label: {e}")
             import traceback
-
             logger.error(traceback.format_exc())
             return False
 
@@ -263,7 +227,7 @@ class WireManager:
         schematic_path: Path, position: List[float], diameter: float = 0
     ) -> bool:
         """
-        Add a junction (connection dot) to the schematic
+        Add a junction (connection dot) to the schematic using text manipulation.
 
         Args:
             schematic_path: Path to .kicad_sch file
@@ -274,60 +238,43 @@ class WireManager:
             True if successful, False otherwise
         """
         try:
-            # Read schematic
             with open(schematic_path, "r", encoding="utf-8") as f:
-                sch_content = f.read()
+                content = f.read()
 
-            sch_data = sexpdata.loads(sch_content)
+            sp = snap_to_grid(position[0], position[1])
+            x, y = _fmt(sp[0]), _fmt(sp[1])
+            d = _fmt(diameter)
+            new_uuid = str(uuid.uuid4())
 
-            # Create junction S-expression
-            # Format: (junction (at x y) (diameter 0) (color 0 0 0 0) (uuid ...))
-            junction_sexp = [
-                Symbol("junction"),
-                [Symbol("at"), position[0], position[1]],
-                [Symbol("diameter"), diameter],
-                [Symbol("color"), 0, 0, 0, 0],
-                [Symbol("uuid"), str(uuid.uuid4())],
-            ]
+            junction_block = (
+                f"(junction (at {x} {y}) (diameter {d}) (color 0 0 0 0)\n"
+                f"    (uuid \"{new_uuid}\")\n"
+                f"  )"
+            )
 
-            # Find insertion point
-            sheet_instances_index = None
-            for i, item in enumerate(sch_data):
-                if (
-                    isinstance(item, list)
-                    and len(item) > 0
-                    and item[0] == Symbol("sheet_instances")
-                ):
-                    sheet_instances_index = i
-                    break
-
-            if sheet_instances_index is None:
+            insert_at = content.rfind("(sheet_instances")
+            if insert_at == -1:
                 logger.error("No sheet_instances section found in schematic")
                 return False
 
-            # Insert junction
-            sch_data.insert(sheet_instances_index, junction_sexp)
-            logger.info(f"Injected junction at {position}")
+            content = content[:insert_at] + junction_block + "\n  " + content[insert_at:]
 
-            # Write back
             with open(schematic_path, "w", encoding="utf-8") as f:
-                output = sexpdata.dumps(sch_data)
-                f.write(output)
+                f.write(content)
 
-            logger.info(f"Successfully added junction to {schematic_path.name}")
+            logger.info(f"Successfully added junction at {position}")
             return True
 
         except Exception as e:
             logger.error(f"Error adding junction: {e}")
             import traceback
-
             logger.error(traceback.format_exc())
             return False
 
     @staticmethod
     def add_no_connect(schematic_path: Path, position: List[float]) -> bool:
         """
-        Add a no-connect flag to the schematic
+        Add a no-connect flag to the schematic using text manipulation.
 
         Args:
             schematic_path: Path to .kicad_sch file
@@ -337,51 +284,35 @@ class WireManager:
             True if successful, False otherwise
         """
         try:
-            # Read schematic
             with open(schematic_path, "r", encoding="utf-8") as f:
-                sch_content = f.read()
+                content = f.read()
 
-            sch_data = sexpdata.loads(sch_content)
+            sp = snap_to_grid(position[0], position[1])
+            x, y = _fmt(sp[0]), _fmt(sp[1])
+            new_uuid = str(uuid.uuid4())
 
-            # Create no_connect S-expression
-            # Format: (no_connect (at x y) (uuid ...))
-            no_connect_sexp = [
-                Symbol("no_connect"),
-                [Symbol("at"), position[0], position[1]],
-                [Symbol("uuid"), str(uuid.uuid4())],
-            ]
+            no_connect_block = (
+                f"(no_connect (at {x} {y})\n"
+                f"    (uuid \"{new_uuid}\")\n"
+                f"  )"
+            )
 
-            # Find insertion point
-            sheet_instances_index = None
-            for i, item in enumerate(sch_data):
-                if (
-                    isinstance(item, list)
-                    and len(item) > 0
-                    and item[0] == Symbol("sheet_instances")
-                ):
-                    sheet_instances_index = i
-                    break
-
-            if sheet_instances_index is None:
+            insert_at = content.rfind("(sheet_instances")
+            if insert_at == -1:
                 logger.error("No sheet_instances section found in schematic")
                 return False
 
-            # Insert no_connect
-            sch_data.insert(sheet_instances_index, no_connect_sexp)
-            logger.info(f"Injected no-connect at {position}")
+            content = content[:insert_at] + no_connect_block + "\n  " + content[insert_at:]
 
-            # Write back
             with open(schematic_path, "w", encoding="utf-8") as f:
-                output = sexpdata.dumps(sch_data)
-                f.write(output)
+                f.write(content)
 
-            logger.info(f"Successfully added no-connect to {schematic_path.name}")
+            logger.info(f"Successfully added no-connect at {position}")
             return True
 
         except Exception as e:
             logger.error(f"Error adding no-connect: {e}")
             import traceback
-
             logger.error(traceback.format_exc())
             return False
 
@@ -395,6 +326,8 @@ class WireManager:
         """
         Delete a wire from the schematic matching given start/end coordinates.
 
+        Uses text-based search and removal to preserve file formatting.
+
         Args:
             schematic_path: Path to .kicad_sch file
             start_point: [x, y] coordinates for wire start
@@ -406,65 +339,51 @@ class WireManager:
         """
         try:
             with open(schematic_path, "r", encoding="utf-8") as f:
-                sch_content = f.read()
-
-            sch_data = sexpdata.loads(sch_content)
+                content = f.read()
 
             sx, sy = start_point
             ex, ey = end_point
+            xy_pattern = re.compile(r'\(xy\s+([\d\.\-eE]+)\s+([\d\.\-eE]+)\s*\)')
 
-            for i, item in enumerate(sch_data):
-                if not (
-                    isinstance(item, list)
-                    and len(item) > 0
-                    and item[0] == Symbol("wire")
-                ):
+            pos = 0
+            while True:
+                idx = content.find('(wire ', pos)
+                if idx == -1:
+                    break
+
+                block_end = _find_balanced_end(content, idx)
+                if block_end is None:
+                    pos = idx + 1
                     continue
 
-                # Extract pts from the wire s-expression
-                pts_list = None
-                for part in item[1:]:
-                    if (
-                        isinstance(part, list)
-                        and len(part) > 0
-                        and part[0] == Symbol("pts")
-                    ):
-                        pts_list = part
-                        break
+                block_text = content[idx:block_end]
+                xy_matches = xy_pattern.findall(block_text)
 
-                if pts_list is None:
-                    continue
+                if len(xy_matches) >= 2:
+                    x1, y1 = float(xy_matches[0][0]), float(xy_matches[0][1])
+                    x2, y2 = float(xy_matches[-1][0]), float(xy_matches[-1][1])
 
-                xy_points = [
-                    p
-                    for p in pts_list[1:]
-                    if isinstance(p, list) and len(p) >= 3 and p[0] == Symbol("xy")
-                ]
-                if len(xy_points) < 2:
-                    continue
+                    match_fwd = (
+                        abs(x1 - sx) < tolerance
+                        and abs(y1 - sy) < tolerance
+                        and abs(x2 - ex) < tolerance
+                        and abs(y2 - ey) < tolerance
+                    )
+                    match_rev = (
+                        abs(x1 - ex) < tolerance
+                        and abs(y1 - ey) < tolerance
+                        and abs(x2 - sx) < tolerance
+                        and abs(y2 - sy) < tolerance
+                    )
 
-                x1, y1 = float(xy_points[0][1]), float(xy_points[0][2])
-                x2, y2 = float(xy_points[-1][1]), float(xy_points[-1][2])
+                    if match_fwd or match_rev:
+                        content = _remove_block_from_text(content, idx, block_end)
+                        with open(schematic_path, "w", encoding="utf-8") as f:
+                            f.write(content)
+                        logger.info(f"Deleted wire from {start_point} to {end_point}")
+                        return True
 
-                match_fwd = (
-                    abs(x1 - sx) < tolerance
-                    and abs(y1 - sy) < tolerance
-                    and abs(x2 - ex) < tolerance
-                    and abs(y2 - ey) < tolerance
-                )
-                match_rev = (
-                    abs(x1 - ex) < tolerance
-                    and abs(y1 - ey) < tolerance
-                    and abs(x2 - sx) < tolerance
-                    and abs(y2 - sy) < tolerance
-                )
-
-                if match_fwd or match_rev:
-                    del sch_data[i]
-                    with open(schematic_path, "w", encoding="utf-8") as f:
-                        f.write(sexpdata.dumps(sch_data))
-                    logger.info(f"Deleted wire from {start_point} to {end_point}")
-                    return True
+                pos = block_end
 
             logger.warning(f"No matching wire found for {start_point} to {end_point}")
             return False
@@ -472,7 +391,6 @@ class WireManager:
         except Exception as e:
             logger.error(f"Error deleting wire: {e}")
             import traceback
-
             logger.error(traceback.format_exc())
             return False
 
@@ -486,6 +404,9 @@ class WireManager:
         """
         Delete a net label from the schematic by name (and optionally position).
 
+        Matches all label types: label, global_label, hierarchical_label.
+        Uses text-based search and removal to preserve file formatting.
+
         Args:
             schematic_path: Path to .kicad_sch file
             net_name: Net label text to match
@@ -497,46 +418,57 @@ class WireManager:
         """
         try:
             with open(schematic_path, "r", encoding="utf-8") as f:
-                sch_content = f.read()
+                content = f.read()
 
-            sch_data = sexpdata.loads(sch_content)
+            at_pattern = re.compile(r'\(at\s+([\d\.\-eE]+)\s+([\d\.\-eE]+)')
+            label_types = ('(label ', '(global_label ', '(hierarchical_label ')
 
-            for i, item in enumerate(sch_data):
-                if not (
-                    isinstance(item, list)
-                    and len(item) > 0
-                    and item[0] == Symbol("label")
-                ):
+            pos = 0
+            while True:
+                # Find the nearest label of any type
+                idx = -1
+                for lt in label_types:
+                    found = content.find(lt, pos)
+                    if found != -1 and (idx == -1 or found < idx):
+                        idx = found
+                if idx == -1:
+                    break
+
+                block_end = _find_balanced_end(content, idx)
+                if block_end is None:
+                    pos = idx + 1
                     continue
 
-                # Second element is the label text
-                if len(item) < 2 or item[1] != net_name:
+                block_text = content[idx:block_end]
+
+                # Extract label text: (label "TEXT" ...) or (global_label "TEXT" ...) etc.
+                label_match = re.match(
+                    r'\((?:label|global_label|hierarchical_label)\s+"([^"]*)"',
+                    block_text,
+                )
+                if not label_match or label_match.group(1) != net_name:
+                    pos = block_end
                     continue
 
+                # Optionally check position
                 if position is not None:
-                    # Find (at x y ...) sub-expression and check coordinates
-                    at_entry = next(
-                        (
-                            p
-                            for p in item[1:]
-                            if isinstance(p, list)
-                            and len(p) >= 3
-                            and p[0] == Symbol("at")
-                        ),
-                        None,
-                    )
-                    if at_entry is None:
-                        continue
-                    lx, ly = float(at_entry[1]), float(at_entry[2])
-                    if not (
-                        abs(lx - position[0]) < tolerance
-                        and abs(ly - position[1]) < tolerance
-                    ):
+                    at_match = at_pattern.search(block_text)
+                    if at_match:
+                        lx = float(at_match.group(1))
+                        ly = float(at_match.group(2))
+                        if not (
+                            abs(lx - position[0]) < tolerance
+                            and abs(ly - position[1]) < tolerance
+                        ):
+                            pos = block_end
+                            continue
+                    else:
+                        pos = block_end
                         continue
 
-                del sch_data[i]
+                content = _remove_block_from_text(content, idx, block_end)
                 with open(schematic_path, "w", encoding="utf-8") as f:
-                    f.write(sexpdata.dumps(sch_data))
+                    f.write(content)
                 logger.info(f"Deleted label '{net_name}'")
                 return True
 
@@ -546,7 +478,6 @@ class WireManager:
         except Exception as e:
             logger.error(f"Error deleting label: {e}")
             import traceback
-
             logger.error(traceback.format_exc())
             return False
 
@@ -569,10 +500,10 @@ class WireManager:
         x2, y2 = end
 
         if prefer_horizontal_first:
-            # Route: start → (x2, y1) → end
+            # Route: start -> (x2, y1) -> end
             corner = [x2, y1]
         else:
-            # Route: start → (x1, y2) → end
+            # Route: start -> (x1, y2) -> end
             corner = [x1, y2]
 
         # If start and end are already aligned, return direct path
@@ -580,70 +511,3 @@ class WireManager:
             return [start, end]
 
         return [start, corner, end]
-
-
-if __name__ == "__main__":
-    # Test wire creation
-    import sys
-
-    sys.path.insert(0, "/home/chris/MCP/KiCAD-MCP-Server/python")
-
-    from pathlib import Path
-    import shutil
-
-    print("=" * 80)
-    print("WIRE MANAGER TEST")
-    print("=" * 80)
-
-    # Create test schematic (cross-platform temp directory)
-    test_path = Path(tempfile.gettempdir()) / "test_wire_manager.kicad_sch"
-    template_path = Path(
-        "/home/chris/MCP/KiCAD-MCP-Server/python/templates/empty.kicad_sch"
-    )
-
-    shutil.copy(template_path, test_path)
-    print(f"\n✓ Created test schematic: {test_path}")
-
-    # Test 1: Add simple wire
-    print("\n[1/5] Testing simple wire creation...")
-    success = WireManager.add_wire(test_path, [50.8, 50.8], [101.6, 50.8])
-    print(f"  {'✓' if success else '✗'} Simple wire: {success}")
-
-    # Test 2: Add orthogonal wire
-    print("\n[2/5] Testing orthogonal wire...")
-    path = WireManager.create_orthogonal_path([50.8, 60.96], [101.6, 88.9])
-    print(f"  Orthogonal path: {path}")
-    success = WireManager.add_polyline_wire(test_path, path)
-    print(f"  {'✓' if success else '✗'} Polyline wire: {success}")
-
-    # Test 3: Add label
-    print("\n[3/5] Testing label creation...")
-    success = WireManager.add_label(test_path, "VCC", [76.2, 50.8])
-    print(f"  {'✓' if success else '✗'} Label: {success}")
-
-    # Test 4: Add junction
-    print("\n[4/5] Testing junction creation...")
-    success = WireManager.add_junction(test_path, [76.2, 50.8])
-    print(f"  {'✓' if success else '✗'} Junction: {success}")
-
-    # Test 5: Add no-connect
-    print("\n[5/5] Testing no-connect creation...")
-    success = WireManager.add_no_connect(test_path, [127, 50.8])
-    print(f"  {'✓' if success else '✗'} No-connect: {success}")
-
-    # Verify with kicad-skip
-    print("\n[Verification] Loading with kicad-skip...")
-    try:
-        from skip import Schematic
-
-        sch = Schematic(str(test_path))
-        wire_count = len(list(sch.wire)) if hasattr(sch, "wire") else 0
-        print(f"  ✓ Loaded successfully")
-        print(f"  ✓ Wire count: {wire_count}")
-    except Exception as e:
-        print(f"  ✗ Failed: {e}")
-
-    print("\n" + "=" * 80)
-    print(f"Test schematic saved: {test_path}")
-    print("Open in KiCad to verify visual appearance!")
-    print("=" * 80)

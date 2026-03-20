@@ -1,4 +1,5 @@
 from skip import Schematic
+import math
 import os
 import logging
 from pathlib import Path
@@ -103,13 +104,26 @@ class ConnectionManager:
 
             # Get pin location relative to symbol
             pin_loc = target_pin.location
-            # Get symbol location
+            # Get symbol location and rotation
             symbol_at = symbol.at.value
+            symbol_rotation = float(symbol_at[2]) if len(symbol_at) > 2 else 0.0
+
+            pin_rel_x = float(pin_loc[0])
+            pin_rel_y = float(pin_loc[1])
+
+            # Apply symbol rotation to pin position
+            if symbol_rotation != 0:
+                angle_rad = math.radians(symbol_rotation)
+                cos_a = math.cos(angle_rad)
+                sin_a = math.sin(angle_rad)
+                pin_rel_x, pin_rel_y = (
+                    pin_rel_x * cos_a - pin_rel_y * sin_a,
+                    pin_rel_x * sin_a + pin_rel_y * cos_a,
+                )
 
             # Calculate absolute position
-            # pin_loc is relative to symbol origin, need to add symbol position
-            abs_x = symbol_at[0] + pin_loc[0]
-            abs_y = symbol_at[1] + pin_loc[1]
+            abs_x = float(symbol_at[0]) + pin_rel_x
+            abs_y = float(symbol_at[1]) + pin_rel_y
 
             return [abs_x, abs_y]
         except Exception as e:
