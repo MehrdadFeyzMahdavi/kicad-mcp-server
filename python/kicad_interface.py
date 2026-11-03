@@ -359,7 +359,7 @@ class KiCADInterface:
             "run_drc": self.design_rule_commands.run_drc,
             "get_drc_violations": self.design_rule_commands.get_drc_violations,
             # Export commands
-            "export_gerber": self.export_commands.export_gerber,
+            "export_gerber": self._phase5_export_gerber,
             "export_pdf": self.export_commands.export_pdf,
             "export_svg": self.export_commands.export_svg,
             "export_3d": self.export_commands.export_3d,
@@ -3203,6 +3203,37 @@ print("ok")
             result["message"] = "VRML export needs exactly one open PCB."
             return result
         return export_vrml(paths[0], params)
+
+    def _phase5_export_gerber(self, params):
+        """Plot from a copy of the saved PCB with kicad-cli. SWIG PLOT_CONTROLLER is not used."""
+        from kicad_api.pcb_safety import ipc_unavailable_result
+        from kicad_api.phase5 import export_gerber
+
+        paths = []
+        if self.ipc_board_api:
+            try:
+                paths = self.ipc_board_api._open_pcb_paths()
+            except Exception as exc:
+                logger.warning("Could not list open PCBs for Gerber export: %s", exc)
+                paths = []
+        if len(paths) > 1:
+            result = ipc_unavailable_result()
+            result["_keep_backend"] = True
+            result["message"] = "Gerber export needs exactly one open PCB."
+            return result
+        board_path = paths[0] if paths else self._swig_board_path()
+        if not board_path:
+            result = ipc_unavailable_result()
+            result["_keep_backend"] = True
+            result["message"] = "Gerber export needs an open PCB in the PCB editor or a saved loaded board."
+            return result
+        result = export_gerber(board_path, params)
+        if result.get("success") and os.environ.get("KICAD_MCP_DEV") == "1":
+            try:
+                self.export_commands._dev_copy_mcp_log(result["outputDir"])
+            except Exception as dev_err:
+                logger.warning(f"[DEV] Could not copy MCP log: {dev_err}")
+        return result
 
     def _ipc_add_zone(self, params):
         return self.ipc_board_api.create_verified_zone(params)

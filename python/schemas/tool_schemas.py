@@ -1224,26 +1224,41 @@ EXPORT_TOOLS = [
     {
         "name": "export_gerber",
         "title": "Export Gerber Files",
-        "description": "Generates Gerber files for PCB fabrication (industry standard format).",
+        "description": "Plots Gerber and Excellon drill files with kicad-cli from a temporary copy of the saved PCB. The open PCB is never the plot input, unsaved editor changes are not included, and zones are not refilled.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "outputPath": {
+                "outputDir": {
                     "type": "string",
-                    "description": "Directory path for output files"
+                    "description": "Directory for output files (outputPath is accepted as an alias)"
                 },
                 "layers": {
                     "type": "array",
-                    "description": "List of layers to export (if not provided, exports all copper and mask layers)",
+                    "description": "Layers to plot, e.g. F.Cu, Edge.Cuts (if not provided, plots every enabled layer)",
                     "items": {"type": "string"}
                 },
-                "includeDrillFiles": {
+                "generateDrillFiles": {
                     "type": "boolean",
-                    "description": "Include drill files (Excellon format)",
+                    "description": "Write separate PTH/NPTH Excellon drill files (includeDrillFiles is accepted as an alias)",
                     "default": True
+                },
+                "generateMapFile": {
+                    "type": "boolean",
+                    "description": "Also write a Gerber X2 drill map",
+                    "default": False
+                },
+                "useProtelExtensions": {
+                    "type": "boolean",
+                    "description": "Use Protel extensions (.gtl, .gbl, ...) instead of .gbr",
+                    "default": False
+                },
+                "useAuxOrigin": {
+                    "type": "boolean",
+                    "description": "Use the drill/place file origin",
+                    "default": False
                 }
             },
-            "required": ["outputPath"]
+            "required": ["outputDir"]
         }
     },
     {

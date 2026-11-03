@@ -45,7 +45,7 @@ execute_tool,mcp_tool,no,src/tools/router.ts,execute_tool,,,none,defined_not_reg
 export_3d,mcp_tool,yes,src/tools/export.ts,export_3d,self.export_commands.export_3d,,swig_file_or_external,implemented,statically_inspected,Module: python/commands/export.py.
 export_bom,mcp_tool,yes,src/tools/export.ts,export_bom,self.export_commands.export_bom,,swig_file_or_external,implemented,statically_inspected,Module: python/commands/export.py.
 export_dsn,mcp_tool,yes,src/tools/freerouting.ts,export_dsn,self.freerouting_commands.export_dsn,,swig_file_or_external,implemented,statically_inspected,Module: python/commands/freerouting.py.
-export_gerber,mcp_tool,yes,src/tools/export.ts,export_gerber,self.export_commands.export_gerber,,swig_file_or_external,implemented,statically_inspected,Module: python/commands/export.py.
+export_gerber,mcp_tool,yes,src/tools/export.ts,export_gerber,,_phase5_export_gerber,external,implemented,live-2026-11-03,"kicad-cli Gerber and drill export from a copy of the saved PCB. SWIG PLOT_CONTROLLER is no longer used."
 export_netlist,mcp_tool,yes,src/tools/export.ts,export_netlist,,_phase5_export_netlist,external,implemented,cli-and-live-2026-11-01,"kicad-cli export of the same-named schematic only. The disposable board has no matching schematic."
 export_pdf,mcp_tool,yes,src/tools/export.ts,export_pdf,self.export_commands.export_pdf,,swig_file_or_external,implemented,statically_inspected,Module: python/commands/export.py.
 export_position_file,mcp_tool,yes,src/tools/export.ts,export_position_file,,_ipc_export_position_file,ipc,implemented,live-2026-11-01,"Writes positions read from the open editor. Does not write the PCB."

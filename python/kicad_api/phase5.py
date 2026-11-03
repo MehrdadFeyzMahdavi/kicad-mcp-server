@@ -368,3 +368,164 @@ def export_vrml(
             "message": "Exported VRML from a copy of the saved PCB. Unsaved editor changes are not included.",
         }
     )
+
+
+def _kicad_file_hashes(directory: Path) -> Dict[str, str]:
+    if not directory.is_dir():
+        return {}
+    return {
+        str(item): _file_hash(item)
+        for item in directory.iterdir()
+        if item.is_file() and item.suffix.lower() in PROTECTED_SUFFIXES
+    }
+
+
+def export_gerber(
+    board_path: str,
+    params: Dict[str, Any],
+    runner: Optional[Callable] = None,
+) -> Dict[str, Any]:
+    """Plot Gerbers and drill files from a copy of the saved PCB with kicad-cli.
+
+    The open PCB is never the plot input. kicad-cli writes into a temporary
+    directory and only the plot outputs are copied to outputDir, so no KiCad
+    board, schematic, or project file there can be created or overwritten.
+    """
+    output = params.get("outputDir") or params.get("outputPath")
+    if not isinstance(output, str) or not output.strip():
+        return external({"success": False, "error": "INVALID_ARGUMENT", "message": "outputDir is required."})
+    layers = params.get("layers") or []
+    if not isinstance(layers, list) or not all(isinstance(name, str) and name.strip() for name in layers):
+        return external({"success": False, "error": "INVALID_ARGUMENT", "message": "layers must be a list of layer names."})
+    flags = {}
+    for name, default in (
+        ("useProtelExtensions", False),
+        ("generateMapFile", False),
+        ("useAuxOrigin", False),
+    ):
+        value = params.get(name)
+        flags[name] = default if value is None else value
+    drill = params.get("generateDrillFiles")
+    if drill is None:
+        drill = params.get("includeDrillFiles")
+    flags["generateDrillFiles"] = True if drill is None else drill
+    if not all(isinstance(value, bool) for value in flags.values()):
+        return external(
+            {
+                "success": False,
+                "error": "INVALID_ARGUMENT",
+                "message": "useProtelExtensions, generateDrillFiles, generateMapFile, and useAuxOrigin must be booleans.",
+            }
+        )
+
+    destination = Path(output).expanduser()
+    if destination.suffix.lower() in PROTECTED_SUFFIXES or destination.is_file():
+        return external(
+            {"success": False, "error": "INVALID_ARGUMENT", "message": "outputDir must be a directory, not a file."}
+        )
+    source = Path(board_path)
+    if not source.is_file():
+        return external({"success": False, "error": "NOT_FOUND", "message": "The saved PCB file is not readable."})
+    cli = _kicad_cli()
+    if cli is None:
+        return external({"success": False, "error": "UNSUPPORTED_OPERATION", "message": "kicad-cli was not found."})
+
+    before = _file_hash(source)
+    kicad_before = _kicad_file_hashes(destination)
+    gerbers: List[str] = []
+    drills: List[str] = []
+    with tempfile.TemporaryDirectory(prefix="kicad-mcp-gerber-") as temporary:
+        work = Path(temporary)
+        (work / "in").mkdir()
+        plotted = work / "out"
+        plotted.mkdir()
+        copied = work / "in" / source.name
+        shutil.copy2(source, copied)
+
+        command = [str(cli), "pcb", "export", "gerbers", "--output", str(plotted)]
+        if layers:
+            command.extend(["--layers", ",".join(name.strip() for name in layers)])
+        if not flags["useProtelExtensions"]:
+            command.append("--no-protel-ext")
+        if flags["useAuxOrigin"]:
+            command.append("--use-drill-file-origin")
+        command.append(str(copied))
+        completed = _run_cli(command, timeout=120, runner=runner)
+        if completed["returncode"] != 0:
+            return external(
+                {
+                    "success": False,
+                    "error": "IPC_ERROR",
+                    "message": completed.get("stderr") or "kicad-cli did not plot the Gerbers.",
+                }
+            )
+        gerbers = sorted(item.name for item in plotted.iterdir() if item.is_file())
+
+        if flags["generateDrillFiles"]:
+            command = [
+                str(cli), "pcb", "export", "drill",
+                "--output", str(plotted),
+                "--format", "excellon",
+                "--drill-origin", "plot" if flags["useAuxOrigin"] else "absolute",
+                "--excellon-separate-th",
+            ]
+            if flags["generateMapFile"]:
+                command.extend(["--generate-map", "--map-format", "gerberx2"])
+            command.append(str(copied))
+            completed = _run_cli(command, timeout=60, runner=runner)
+            if completed["returncode"] != 0:
+                return external(
+                    {
+                        "success": False,
+                        "error": "IPC_ERROR",
+                        "message": completed.get("stderr") or "kicad-cli did not write the drill files.",
+                    }
+                )
+            drills = sorted(
+                item.name for item in plotted.iterdir() if item.is_file() and item.name not in gerbers
+            )
+
+        written = [
+            item for item in sorted(plotted.iterdir())
+            if item.is_file() and item.suffix.lower() not in PROTECTED_SUFFIXES
+        ]
+        if not written:
+            return external({"success": False, "error": "IPC_ERROR", "message": "kicad-cli wrote no plot files."})
+        if source.exists() and _file_hash(source) != before:
+            return external(
+                {"success": False, "error": "IPC_ERROR", "message": "The PCB file changed while plotting. Nothing was copied to outputDir."}
+            )
+        destination.mkdir(parents=True, exist_ok=True)
+        for item in written:
+            shutil.copy2(item, destination / item.name)
+
+    if _file_hash(source) != before:
+        return external({"success": False, "error": "IPC_ERROR", "message": "The PCB file changed while plotting."})
+    kicad_after = _kicad_file_hashes(destination)
+    if kicad_after != kicad_before:
+        return external(
+            {"success": False, "error": "IPC_ERROR", "message": "A KiCad file in outputDir changed during the export."}
+        )
+    if flags["generateDrillFiles"] and not any(name.lower().endswith(".drl") for name in drills):
+        return external(
+            {
+                "success": False,
+                "error": "IPC_ERROR",
+                "message": "Gerbers were written but kicad-cli wrote no drill file.",
+                "outputDir": str(destination),
+                "files": {"gerber": gerbers, "drill": drills},
+            }
+        )
+    return external(
+        {
+            "success": True,
+            "outputDir": str(destination),
+            "source": "saved-pcb-copy",
+            "board": str(source),
+            "files": {"gerber": gerbers, "drill": drills},
+            "message": (
+                f"Plotted {len(gerbers)} Gerber file(s) and {len(drills)} drill file(s) from a copy of the saved PCB. "
+                "Unsaved editor changes are not included. Zones were not refilled."
+            ),
+        }
+    )

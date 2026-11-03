@@ -355,6 +355,136 @@ def test_netlist_cli_exports_a_temporary_schematic_without_editing_it(tmp_path=N
     assert output.stat().st_size > 0
 
 
+def _fake_plotter(calls, extra=None):
+    """Imitate kicad-cli: write plot files into --output and record the command."""
+
+    def run(command):
+        calls.append(list(command))
+        out = Path(command[command.index("--output") + 1])
+        stem = Path(command[-1]).stem
+        if command[3] == "gerbers":
+            (out / f"{stem}-F_Cu.gbr").write_text("G04 F.Cu*", encoding="utf-8")
+            (out / f"{stem}-Edge_Cuts.gbr").write_text("G04 Edge*", encoding="utf-8")
+            (out / f"{stem}-job.gbrjob").write_text("{}", encoding="utf-8")
+            for name in extra or []:
+                (out / name).write_text("stray", encoding="utf-8")
+        else:
+            (out / f"{stem}-PTH.drl").write_text("M48", encoding="utf-8")
+            (out / f"{stem}-NPTH.drl").write_text("M48", encoding="utf-8")
+        return {"returncode": 0, "stdout": "", "stderr": ""}
+
+    return run
+
+
+def test_gerber_plots_a_copy_and_never_the_open_pcb(tmp_path=None):
+    import tempfile
+    from kicad_api import phase5
+
+    temporary = tmp_path or Path(tempfile.mkdtemp())
+    board = temporary / "open.kicad_pcb"
+    board.write_text("(kicad_pcb open)", encoding="utf-8")
+    out = temporary / "fab"
+    calls = []
+    original = phase5._kicad_cli
+    phase5._kicad_cli = lambda: Path("kicad-cli.exe")
+    try:
+        result = phase5.export_gerber(str(board), {"outputDir": str(out)}, runner=_fake_plotter(calls))
+    finally:
+        phase5._kicad_cli = original
+    assert result["success"] is True, result
+    assert result["source"] == "saved-pcb-copy"
+    assert [command[3] for command in calls] == ["gerbers", "drill"]
+    for command in calls:
+        assert str(board) not in command
+        assert Path(command[-1]).name == board.name
+        assert Path(command[-1]).parent != board.parent
+        assert "--check-zones" not in command
+    assert "--no-protel-ext" in calls[0]
+    assert "--layers" not in calls[0]
+    assert "--excellon-separate-th" in calls[1]
+    assert result["files"]["drill"] == ["open-NPTH.drl", "open-PTH.drl"]
+    assert "open-F_Cu.gbr" in result["files"]["gerber"]
+    assert (out / "open-PTH.drl").is_file()
+    assert board.read_text(encoding="utf-8") == "(kicad_pcb open)"
+
+
+def test_gerber_never_writes_kicad_files_into_output(tmp_path=None):
+    import tempfile
+    from kicad_api import phase5
+
+    temporary = tmp_path or Path(tempfile.mkdtemp())
+    board = temporary / "board.kicad_pcb"
+    board.write_text("(kicad_pcb source)", encoding="utf-8")
+    out = temporary / "fab"
+    out.mkdir()
+    neighbour = out / "other.kicad_pcb"
+    neighbour.write_text("(kicad_pcb neighbour)", encoding="utf-8")
+    calls = []
+    original = phase5._kicad_cli
+    phase5._kicad_cli = lambda: Path("kicad-cli.exe")
+    try:
+        result = phase5.export_gerber(
+            str(board),
+            {"outputPath": str(out), "includeDrillFiles": False, "layers": ["F.Cu", "Edge.Cuts"], "useProtelExtensions": True},
+            runner=_fake_plotter(calls, extra=["other.kicad_pcb"]),
+        )
+    finally:
+        phase5._kicad_cli = original
+    assert result["success"] is True, result
+    assert [command[3] for command in calls] == ["gerbers"]
+    assert calls[0][calls[0].index("--layers") + 1] == "F.Cu,Edge.Cuts"
+    assert "--no-protel-ext" not in calls[0]
+    assert neighbour.read_text(encoding="utf-8") == "(kicad_pcb neighbour)"
+    assert result["files"]["drill"] == []
+
+
+def test_gerber_rejects_bad_output_and_runs_nothing(tmp_path=None):
+    import tempfile
+    from kicad_api import phase5
+
+    temporary = tmp_path or Path(tempfile.mkdtemp())
+    board = temporary / "board.kicad_pcb"
+    board.write_text("pcb", encoding="utf-8")
+    calls = []
+    runner = _fake_plotter(calls)
+    for params in (
+        {},
+        {"outputDir": str(board)},
+        {"outputDir": str(temporary / "x.kicad_pro")},
+        {"outputDir": str(temporary / "fab"), "layers": "F.Cu"},
+        {"outputDir": str(temporary / "fab"), "generateDrillFiles": "yes"},
+    ):
+        result = phase5.export_gerber(str(board), params, runner=runner)
+        assert result["success"] is False
+        assert result["error"] == "INVALID_ARGUMENT"
+    assert calls == []
+    assert board.read_text(encoding="utf-8") == "pcb"
+    assert not (temporary / "fab").exists()
+
+
+def test_gerber_failure_copies_nothing(tmp_path=None):
+    import tempfile
+    from kicad_api import phase5
+
+    temporary = tmp_path or Path(tempfile.mkdtemp())
+    board = temporary / "board.kicad_pcb"
+    board.write_text("pcb", encoding="utf-8")
+    out = temporary / "fab"
+    original = phase5._kicad_cli
+    phase5._kicad_cli = lambda: Path("kicad-cli.exe")
+    try:
+        result = phase5.export_gerber(
+            str(board),
+            {"outputDir": str(out)},
+            runner=lambda command: {"returncode": 1, "stdout": "", "stderr": "plot failed"},
+        )
+    finally:
+        phase5._kicad_cli = original
+    assert result["success"] is False
+    assert result["message"] == "plot failed"
+    assert not out.exists()
+
+
 if __name__ == "__main__":
     import tempfile
     import traceback

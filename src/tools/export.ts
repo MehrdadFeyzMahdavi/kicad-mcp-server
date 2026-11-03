@@ -25,6 +25,7 @@ export function registerExportTools(server: McpServer, callKicadScript: CommandF
   // ------------------------------------------------------
   server.tool(
     "export_gerber",
+    "Plot Gerber and Excellon drill files with kicad-cli from a temporary copy of the saved PCB. The open PCB is never the plot input, unsaved editor changes are not included, and zones are not refilled. Only plot files are copied into outputDir.",
     {
       outputDir: z.string().describe("Directory to save Gerber files"),
       layers: z.array(z.string()).optional().describe("Optional array of layer names to export (default: all)"),
