@@ -33,7 +33,7 @@ export function registerRoutingTools(
   // Route trace tool
   server.tool(
     "route_trace",
-    "Route a trace segment between two XY points on a fixed layer. WARNING: Does NOT handle layer changes — if start and end are on different copper layers, use route_pad_to_pad instead, which automatically inserts a via.",
+    "Route one trace segment between two XY points on one copper layer. This does not change layer and does not insert a via. For a named pad pair, use route_pad_to_pad.",
     {
       start: z
         .object({

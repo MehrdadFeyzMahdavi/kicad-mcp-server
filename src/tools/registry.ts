@@ -160,6 +160,7 @@ export const directToolNames = [
   "move_component",
   "add_net",
   "route_trace",
+  "route_pad_to_pad",
   "get_board_info",
   "set_board_size",
 

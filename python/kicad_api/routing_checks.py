@@ -10,17 +10,121 @@ COPPER_LAYERS = ("F.Cu", "B.Cu")
 MIN_TRACK_WIDTH_MM = 0.2
 MAX_TRACK_WIDTH_MM = 5.0
 
-LED_SWITCH_LINKS = (
-    ("J1", "1", "R1", "1", "+5V", 0.40),
-    ("R1", "2", "D1", "2", "/LED_A", 0.25),
-    ("D1", "1", "Q1", "3", "/LED_K", 0.25),
-    ("J2", "1", "R2", "1", "/CTRL_IN", 0.25),
-    ("R2", "2", "R3", "1", "/BASE", 0.25),
-    ("R3", "1", "Q1", "2", "/BASE", 0.25),
-    ("J1", "2", "J2", "2", "GND", 0.40),
-    ("J2", "2", "R3", "2", "GND", 0.40),
-    ("R3", "2", "Q1", "1", "GND", 0.40),
-)
+POWER_WIDTH_MM = 0.40
+SIGNAL_WIDTH_MM = 0.25
+_POWER_NETS = {"GND", "AGND", "DGND", "PGND", "VSS", "VDD", "VCC"}
+
+
+def default_track_width(net: str) -> float:
+    """0.40 mm for a power or ground name, 0.25 mm for every other net."""
+    leaf = str(net).strip().rsplit("/", 1)[-1].upper()
+    if leaf in _POWER_NETS or leaf.startswith("+"):
+        return POWER_WIDTH_MM
+    return SIGNAL_WIDTH_MM
+
+
+def _routable_net(net: object) -> Optional[str]:
+    if not isinstance(net, str):
+        return None
+    name = net.strip()
+    if not name or name.lower().startswith("unconnected"):
+        return None
+    return name
+
+
+def _minimum_spanning_edges(pads: Sequence[Dict]) -> List[Tuple[Dict, Dict]]:
+    """Kruskal spanning tree on pad centres. Equal lengths break on reference and pad number."""
+    parent = list(range(len(pads)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    edges = []
+    for left in range(len(pads)):
+        for right in range(left + 1, len(pads)):
+            distance = _length(
+                (float(pads[left]["x"]), float(pads[left]["y"])),
+                (float(pads[right]["x"]), float(pads[right]["y"])),
+            )
+            edges.append((
+                (
+                    round(distance, 6),
+                    str(pads[left]["reference"]),
+                    str(pads[left]["number"]),
+                    str(pads[right]["reference"]),
+                    str(pads[right]["number"]),
+                ),
+                left,
+                right,
+            ))
+    edges.sort(key=lambda item: item[0])
+    chosen = []
+    for _key, left, right in edges:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root == right_root:
+            continue
+        parent[left_root] = right_root
+        chosen.append((pads[left], pads[right]))
+        if len(chosen) == len(pads) - 1:
+            break
+    return chosen
+
+
+def links_from_pad_nets(pads: Sequence[Dict], width_for_net=None) -> List[Tuple[str, str, str, str, str, float]]:
+    """One spanning-tree link for each extra pad that already shares a net.
+
+    The pairs come from the pads on the board. A named circuit list is not used.
+    A pad with a blank net, or a net KiCad marked unconnected, is not linked.
+    """
+    choose_width = default_track_width if width_for_net is None else width_for_net
+    grouped: Dict[str, List[Dict]] = {}
+    for pad in pads:
+        net = _routable_net(pad.get("net"))
+        if net is None:
+            continue
+        grouped.setdefault(net, []).append(pad)
+    links = []
+    for net in sorted(grouped):
+        members = grouped[net]
+        if len(members) < 2:
+            continue
+        width = float(choose_width(net))
+        for start, finish in _minimum_spanning_edges(members):
+            links.append((
+                start["reference"],
+                str(start["number"]),
+                finish["reference"],
+                str(finish["number"]),
+                net,
+                width,
+            ))
+    return links
+
+
+def route_requests_from_pads(
+    pads: Sequence[Dict],
+    layer: str = "F.Cu",
+    clearance: float = 0.2,
+    width_for_net=None,
+) -> List[Dict]:
+    """Requests for validate_connection. Each one still has to pass the same checks."""
+    requests = []
+    for source_ref, source_pad, dest_ref, dest_pad, net, width in links_from_pad_nets(pads, width_for_net):
+        requests.append({
+            "sourceRef": source_ref,
+            "sourcePad": source_pad,
+            "destinationRef": dest_ref,
+            "destinationPad": dest_pad,
+            "net": net,
+            "width": width,
+            "layer": layer,
+            "clearance": clearance,
+        })
+    return requests
 
 
 def track_width_error(width: float) -> Optional[str]:

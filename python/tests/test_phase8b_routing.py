@@ -7,7 +7,7 @@ _PYTHON_ROOT = Path(__file__).resolve().parent.parent
 if str(_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(_PYTHON_ROOT))
 
-from kicad_api.routing_checks import LED_SWITCH_LINKS, validate_connection
+from kicad_api.routing_checks import links_from_pad_nets, route_requests_from_pads, validate_connection
 
 PADS = [
     {"reference": "D1", "number": "1", "net": "/LED_K", "x": -12.732, "y": -16.490, "width": 0.875, "height": 0.950},
@@ -108,31 +108,53 @@ def test_clearance_conflict_is_reported_without_segments():
     assert result["segments"] == []
 
 
-def test_led_switch_links_cover_every_net_without_a_direct_short():
+def test_pad_net_links_cover_every_net_without_a_direct_short():
+    links = links_from_pad_nets(PADS)
+    pairs = {
+        (frozenset({(link[0], link[1]), (link[2], link[3])}), link[4], link[5])
+        for link in links
+    }
+    assert pairs == {
+        (frozenset({("J1", "1"), ("R1", "1")}), "+5V", 0.40),
+        (frozenset({("R1", "2"), ("D1", "2")}), "/LED_A", 0.25),
+        (frozenset({("D1", "1"), ("Q1", "3")}), "/LED_K", 0.25),
+        (frozenset({("J2", "1"), ("R2", "1")}), "/CTRL_IN", 0.25),
+        (frozenset({("R2", "2"), ("R3", "1")}), "/BASE", 0.25),
+        (frozenset({("R3", "1"), ("Q1", "2")}), "/BASE", 0.25),
+        (frozenset({("J1", "2"), ("J2", "2")}), "GND", 0.40),
+        (frozenset({("J2", "2"), ("R3", "2")}), "GND", 0.40),
+        (frozenset({("R3", "2"), ("Q1", "1")}), "GND", 0.40),
+    }
     tracks = []
     kinds = {}
-    for source_ref, source_pad, dest_ref, dest_pad, net, width in LED_SWITCH_LINKS:
-        result = validate_connection(
-            _request(
-                sourceRef=source_ref,
-                sourcePad=source_pad,
-                destinationRef=dest_ref,
-                destinationPad=dest_pad,
-                net=net,
-                width=width,
-            ),
-            PADS,
-            tracks,
-            BOARD,
-        )
-        assert result["success"], (source_ref, source_pad, dest_ref, dest_pad, result)
-        kinds[(source_ref, dest_ref, net)] = result["kind"]
+    for request in route_requests_from_pads(PADS):
+        result = validate_connection(request, PADS, tracks, BOARD)
+        assert result["success"], request
+        kinds[(request["sourceRef"], request["destinationRef"], request["net"])] = result["kind"]
         tracks.extend(
-            {"net": net, "start": segment["start"], "end": segment["end"]}
+            {"net": request["net"], "start": segment["start"], "end": segment["end"]}
             for segment in result["segments"]
         )
     assert kinds[("J1", "J2", "GND")] != "direct"
-    assert {link[4] for link in LED_SWITCH_LINKS} == {"+5V", "/LED_A", "/LED_K", "/CTRL_IN", "/BASE", "GND"}
+    assert {link[4] for link in links} == {"+5V", "/LED_A", "/LED_K", "/CTRL_IN", "/BASE", "GND"}
+
+
+def test_links_follow_the_pads_on_a_net():
+    pads = [
+        {"reference": "U1", "number": "1", "net": "VCC", "x": 0.0, "y": 0.0},
+        {"reference": "C1", "number": "1", "net": "VCC", "x": 5.0, "y": 0.0},
+        {"reference": "C1", "number": "2", "net": "GND", "x": 5.0, "y": 2.0},
+        {"reference": "U1", "number": "2", "net": "GND", "x": 0.0, "y": 2.0},
+        {"reference": "U1", "number": "3", "net": "SIG", "x": 0.0, "y": 4.0},
+        {"reference": "R9", "number": "1", "net": "", "x": 1.0, "y": 1.0},
+        {"reference": "R9", "number": "2", "net": "unconnected-(R9-Pad2)", "x": 2.0, "y": 1.0},
+    ]
+    links = links_from_pad_nets(pads)
+    assert sorted((link[0], link[1], link[2], link[3], link[4]) for link in links) == [
+        ("C1", "2", "U1", "2", "GND"),
+        ("U1", "1", "C1", "1", "VCC"),
+    ]
+    assert {link[5] for link in links} == {0.40}
 
 
 def test_foreign_track_is_not_crossed():

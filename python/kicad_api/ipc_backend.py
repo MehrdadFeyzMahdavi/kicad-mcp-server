@@ -1865,6 +1865,43 @@ class IPCBoardAPI(BoardAPI):
         })
         return created
 
+    def route_from_pad_nets(self, layer: str = "F.Cu", clearance: float = 0.2) -> Dict[str, Any]:
+        """Route the open board from pad nets. A duplicate or a rejected link creates no track."""
+        from kicad_api.routing_checks import route_requests_from_pads
+
+        try:
+            pads = self._routing_pads()
+        except Exception as exc:
+            return {"success": False, "error": "IPC_ERROR", "message": str(exc), "results": []}
+        requests = route_requests_from_pads(pads, layer=layer, clearance=clearance)
+        results = []
+        for request in requests:
+            outcome = self.route_pad_to_pad(request)
+            results.append({
+                "sourceRef": request["sourceRef"],
+                "sourcePad": request["sourcePad"],
+                "destinationRef": request["destinationRef"],
+                "destinationPad": request["destinationPad"],
+                "net": request["net"],
+                "width": request["width"],
+                "success": bool(outcome.get("success")),
+                "error": outcome.get("error", ""),
+                "kind": outcome.get("kind", ""),
+                "length": outcome.get("length"),
+                "message": outcome.get("message", ""),
+            })
+        failures = [
+            item for item in results
+            if not item["success"] and item["error"] != "DUPLICATE_CONNECTION"
+        ]
+        return {
+            "success": not failures,
+            "created": sum(1 for item in results if item["success"]),
+            "duplicates": sum(1 for item in results if item["error"] == "DUPLICATE_CONNECTION"),
+            "links": len(results),
+            "results": results,
+        }
+
     def _commit_route(self, segments: List[Dict[str, Any]]) -> Dict[str, Any]:
         """One undoable commit. A failed read-back removes every track from that commit."""
         from kipy.board_types import Track
