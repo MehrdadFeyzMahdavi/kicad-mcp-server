@@ -50,6 +50,7 @@ class WireManager:
         end_point: List[float],
         stroke_width: float = 0,
         stroke_type: str = "default",
+        snap: bool = True,
     ) -> bool:
         """
         Add a wire to the schematic using text manipulation.
@@ -68,8 +69,12 @@ class WireManager:
             with open(schematic_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            sp = snap_to_grid(start_point[0], start_point[1])
-            ep = snap_to_grid(end_point[0], end_point[1])
+            if snap:
+                sp = snap_to_grid(start_point[0], start_point[1])
+                ep = snap_to_grid(end_point[0], end_point[1])
+            else:
+                sp = (round(float(start_point[0]), 6), round(float(start_point[1]), 6))
+                ep = (round(float(end_point[0]), 6), round(float(end_point[1]), 6))
             x1, y1 = _fmt(sp[0]), _fmt(sp[1])
             x2, y2 = _fmt(ep[0]), _fmt(ep[1])
             w = _fmt(stroke_width)
@@ -173,6 +178,7 @@ class WireManager:
         position: List[float],
         label_type: str = "label",
         orientation: int = 0,
+        snap: bool = True,
     ) -> bool:
         """
         Add a net label to the schematic using text manipulation.
@@ -191,7 +197,10 @@ class WireManager:
             with open(schematic_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            sp = snap_to_grid(position[0], position[1])
+            if snap:
+                sp = snap_to_grid(position[0], position[1])
+            else:
+                sp = (round(float(position[0]), 6), round(float(position[1]), 6))
             x, y = _fmt(sp[0]), _fmt(sp[1])
             new_uuid = str(uuid.uuid4())
 

@@ -1,0 +1,337 @@
+{
+  "steps": [
+    {
+      "name": "ipc_connected",
+      "result": {
+        "openPaths": [
+          "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_pcb"
+        ],
+        "apiVersion": "10.0.6 (10.0.6-0-gcaf7377e9c)"
+      }
+    },
+    {
+      "name": "baseline",
+      "result": {
+        "componentCount": 73,
+        "trackCount": 545,
+        "rawTrackCount": 545,
+        "netCount": 50,
+        "viaIdsBare": true,
+        "viaIdSample": "0bbd31f7-f6bb-49fe-820d-40816261e910",
+        "rPlace": {
+          "reference": "R_PLACE",
+          "id": "9e910bf0-f26e-4922-aff9-97b23a798d21",
+          "footprint": "Resistors SMD:RESC2012X60N",
+          "value": "10k",
+          "rotation": 0.0,
+          "layer": "F.Cu",
+          "x": 230.0,
+          "y": 170.0
+        },
+        "files": {
+          "phase3": {
+            "path": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_pcb",
+            "size": 1756123,
+            "mtime": 1793520690.2737627,
+            "sha256": "04514a3e851369cee2364171711f0496c63ad3a89a1507cecd9fdbbc1146bbd8"
+          },
+          "original": {
+            "path": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-move-test.kicad_pcb",
+            "size": 1756123,
+            "mtime": 1793520690.2737627,
+            "sha256": "04514a3e851369cee2364171711f0496c63ad3a89a1507cecd9fdbbc1146bbd8"
+          }
+        }
+      }
+    },
+    {
+      "name": "add_net_new",
+      "result": {
+        "response": {
+          "success": false,
+          "error": "UNSUPPORTED_OPERATION",
+          "message": "KiCad 10 IPC can list nets with GetNets but has no command to create one. No net was created and the open PCB was not edited.",
+          "net": {
+            "name": "PHASE4_NEW_NET"
+          },
+          "_backend": "ipc",
+          "_realtime": false
+        },
+        "netCount": 50
+      }
+    },
+    {
+      "name": "add_net_existing",
+      "result": {
+        "net": "+5V_ISO",
+        "response": {
+          "success": false,
+          "error": "ALREADY_EXISTS",
+          "message": "Net '+5V_ISO' already exists and was not modified.",
+          "net": {
+            "name": "+5V_ISO",
+            "identifier": "+5V_ISO",
+            "code": 13
+          },
+          "_backend": "ipc",
+          "_realtime": false
+        }
+      }
+    },
+    {
+      "name": "route_missing_net",
+      "result": {
+        "response": {
+          "success": false,
+          "error": "NET_NOT_FOUND",
+          "message": "Net 'PHASE4_MISSING_NET' does not exist. KiCad 10 IPC cannot create it, so no track was added.",
+          "net": "",
+          "_backend": "ipc",
+          "_realtime": false
+        },
+        "newTracks": []
+      }
+    },
+    {
+      "name": "route_existing_net",
+      "result": {
+        "response": {
+          "success": true,
+          "message": "Added trace (visible in KiCAD UI)",
+          "id": "aa6cbda3-6973-48bf-874f-ce402892dd7f",
+          "trace": {
+            "start": {
+              "x": 500.0,
+              "y": 512.0,
+              "unit": "mm"
+            },
+            "end": {
+              "x": 501.4,
+              "y": 512.0,
+              "unit": "mm"
+            },
+            "layer": "F.Cu",
+            "width": 0.2,
+            "net": "+5V_ISO"
+          },
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "raw": [
+          {
+            "id": "aa6cbda3-6973-48bf-874f-ce402892dd7f",
+            "text": "value: \"aa6cbda3-6973-48bf-874f-ce402892dd7f\"\n",
+            "net": "+5V_ISO",
+            "start": [
+              500.0,
+              512.0
+            ],
+            "end": [
+              501.4,
+              512.0
+            ]
+          }
+        ],
+        "reported": [
+          {
+            "start": {
+              "x": 500.0,
+              "y": 512.0
+            },
+            "end": {
+              "x": 501.4,
+              "y": 512.0
+            },
+            "width": 0.2,
+            "layer": "3",
+            "net": "+5V_ISO",
+            "id": "aa6cbda3-6973-48bf-874f-ce402892dd7f"
+          }
+        ]
+      }
+    },
+    {
+      "name": "trace_undo_redo",
+      "result": {
+        "undo": "1",
+        "restoredBaseline": true,
+        "redo": "1",
+        "redone": [
+          {
+            "id": "aa6cbda3-6973-48bf-874f-ce402892dd7f",
+            "net": "+5V_ISO"
+          }
+        ]
+      }
+    },
+    {
+      "name": "delete_verified_trace",
+      "result": {
+        "response": {
+          "success": true,
+          "message": "Deleted 1 trace(s)",
+          "deletedCount": 1,
+          "deletedIds": [
+            "aa6cbda3-6973-48bf-874f-ce402892dd7f"
+          ],
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "present": false,
+        "trackCount": 545
+      }
+    },
+    {
+      "name": "clone",
+      "result": {
+        "response": {
+          "success": true,
+          "reference": "R_PHASE4",
+          "source_reference": "R_PLACE",
+          "footprint": "Resistors SMD:RESC2012X60N",
+          "pads": 2,
+          "uuid": "0ddadca0-afdc-4f8e-a38c-3b8f719245f7",
+          "position": {
+            "x": 480.0,
+            "y": 460.0,
+            "unit": "mm"
+          },
+          "rotation": 0.0,
+          "nets_copied": false,
+          "message": "Cloned R_PLACE as R_PHASE4 (visible in KiCAD UI)",
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "clone": {
+          "reference": "R_PHASE4",
+          "id": "0ddadca0-afdc-4f8e-a38c-3b8f719245f7",
+          "footprint": "Resistors SMD:RESC2012X60N",
+          "value": "10k",
+          "rotation": 0.0,
+          "layer": "F.Cu",
+          "x": 480.0,
+          "y": 460.0
+        },
+        "rPlace": {
+          "reference": "R_PLACE",
+          "id": "9e910bf0-f26e-4922-aff9-97b23a798d21",
+          "footprint": "Resistors SMD:RESC2012X60N",
+          "value": "10k",
+          "rotation": 0.0,
+          "layer": "F.Cu",
+          "x": 230.0,
+          "y": 170.0
+        }
+      }
+    },
+    {
+      "name": "rotate_undo_redo",
+      "result": {
+        "angles": [
+          {
+            "requested": 90,
+            "response": {
+              "success": true,
+              "message": "Rotated component R_PHASE4 to 90\u00b0",
+              "reference": "R_PHASE4",
+              "id": "0ddadca0-afdc-4f8e-a38c-3b8f719245f7",
+              "footprint": "Resistors SMD:RESC2012X60N",
+              "newRotation": 90.0,
+              "requestedRotation": 90.0,
+              "_backend": "ipc",
+              "_realtime": true
+            },
+            "actual": 90.0,
+            "id": "0ddadca0-afdc-4f8e-a38c-3b8f719245f7"
+          },
+          {
+            "requested": 180,
+            "response": {
+              "success": true,
+              "message": "Rotated component R_PHASE4 to 180\u00b0",
+              "reference": "R_PHASE4",
+              "id": "0ddadca0-afdc-4f8e-a38c-3b8f719245f7",
+              "footprint": "Resistors SMD:RESC2012X60N",
+              "newRotation": 180.0,
+              "requestedRotation": 180.0,
+              "_backend": "ipc",
+              "_realtime": true
+            },
+            "actual": 180.0,
+            "id": "0ddadca0-afdc-4f8e-a38c-3b8f719245f7"
+          },
+          {
+            "requested": 0,
+            "response": {
+              "success": true,
+              "message": "Rotated component R_PHASE4 to 0\u00b0",
+              "reference": "R_PHASE4",
+              "id": "0ddadca0-afdc-4f8e-a38c-3b8f719245f7",
+              "footprint": "Resistors SMD:RESC2012X60N",
+              "newRotation": 0.0,
+              "requestedRotation": 0.0,
+              "_backend": "ipc",
+              "_realtime": true
+            },
+            "actual": 0.0,
+            "id": "0ddadca0-afdc-4f8e-a38c-3b8f719245f7"
+          }
+        ],
+        "undo": "1",
+        "afterUndo": 180.0,
+        "redo": "1",
+        "afterRedo": 0.0,
+        "sameId": true
+      }
+    },
+    {
+      "name": "cleanup",
+      "result": {
+        "removedTracks": [],
+        "deletedClone": {
+          "success": true,
+          "message": "Deleted component R_PHASE4 (visible in KiCAD UI)",
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "trackCount": 545,
+        "componentCount": 73
+      }
+    },
+    {
+      "name": "final",
+      "result": {
+        "componentCount": 73,
+        "cloneRemains": false,
+        "rPlaceUnchanged": true,
+        "tracksMatch": true,
+        "netsMatch": true,
+        "extraTracks": [],
+        "blockedSwig": {
+          "save": 0,
+          "load": 0
+        },
+        "openPaths": [
+          "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_pcb"
+        ],
+        "files": {
+          "phase3": {
+            "path": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_pcb",
+            "size": 1756123,
+            "mtime": 1793520690.2737627,
+            "sha256": "04514a3e851369cee2364171711f0496c63ad3a89a1507cecd9fdbbc1146bbd8"
+          },
+          "original": {
+            "path": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-move-test.kicad_pcb",
+            "size": 1756123,
+            "mtime": 1793520690.2737627,
+            "sha256": "04514a3e851369cee2364171711f0496c63ad3a89a1507cecd9fdbbc1146bbd8"
+          }
+        },
+        "filesUnchanged": true
+      }
+    }
+  ],
+  "failures": [],
+  "error": null
+}

@@ -151,7 +151,7 @@ def test_realtime_track(board_api, interactive=False):
 
     try:
         # Add a track
-        success = board_api.add_track(
+        result = board_api.add_track(
             start_x=100.0,
             start_y=100.0,
             end_x=120.0,
@@ -159,6 +159,7 @@ def test_realtime_track(board_api, interactive=False):
             width=0.25,
             layer="F.Cu"
         )
+        success = result.get("success") if isinstance(result, dict) else bool(result)
 
         if success:
             print("✓ Track added! Check the KiCAD window - it should appear at (100, 100) mm")

@@ -43,6 +43,7 @@ export const toolCategories: ToolCategory[] = [
     name: "component",
     description: "Advanced component operations: edit, delete, search, group, annotate",
     tools: [
+      "clone_component",
       "rotate_component",
       "delete_component",
       "edit_component",
@@ -50,7 +51,10 @@ export const toolCategories: ToolCategory[] = [
       "get_component_properties",
       "add_component_annotation",
       "group_components",
-      "replace_component"
+      "replace_component",
+      "get_footprint_geometry",
+      "check_placement",
+      "apply_placement"
     ]
   },
   {
@@ -161,6 +165,9 @@ export const directToolNames = [
 
   // Board setup
   "add_board_outline",
+  "get_footprint_geometry",
+  "check_placement",
+  "apply_placement",
 
   // Schematic essentials (always visible so AI uses them correctly)
   "add_schematic_component",

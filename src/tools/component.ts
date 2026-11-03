@@ -140,6 +140,64 @@ export function registerComponentTools(
   );
 
   // ------------------------------------------------------
+  // Clone Component Tool
+  // ------------------------------------------------------
+  server.tool(
+    "clone_component",
+    {
+      sourceReference: z.string().min(1)
+        .describe("Reference of the existing component to clone"),
+
+      newReference: z.string().min(1)
+        .describe("Reference for the cloned component"),
+
+      position: z.object({
+        x: z.number().finite(),
+        y: z.number().finite(),
+        unit: z.enum(["mm", "inch"])
+      }).describe("Position of the cloned component"),
+
+      rotation: z.number().finite().optional()
+        .describe("Optional rotation in degrees"),
+
+      value: z.string().optional()
+        .describe("Optional new component value"),
+
+      copyNets: z.boolean().optional()
+        .describe("Keep the source component pad nets. Omit to leave the clone unconnected")
+    },
+
+    async ({
+      sourceReference,
+      newReference,
+      position,
+      rotation,
+      value,
+      copyNets
+    }) => {
+      logger.debug(
+        `Cloning ${sourceReference} as ${newReference}`
+      );
+
+      const result = await callKicadScript("clone_component", {
+        sourceReference,
+        newReference,
+        position,
+        rotation,
+        value,
+        copyNets
+      });
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result)
+        }]
+      };
+    }
+  );
+
+  // ------------------------------------------------------
   // Rotate Component Tool
   // ------------------------------------------------------
   server.tool(
@@ -643,6 +701,61 @@ export function registerComponentTools(
           },
         ],
       };
+    },
+  );
+
+  server.tool(
+    "get_footprint_geometry",
+    {
+      boardPath: z.string().describe("Full path of the PCB that must be the only open board"),
+    },
+    async ({ boardPath }) => {
+      const result = await callKicadScript("get_footprint_geometry", { boardPath });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    },
+  );
+
+  server.tool(
+    "check_placement",
+    {
+      boardPath: z.string().describe("Full path of the PCB that must be the only open board"),
+      edgeClearance: z.number().optional().describe("Minimum courtyard-to-edge clearance in mm"),
+      courtyardGap: z.number().optional().describe("Minimum gap between courtyards in mm"),
+      maxConnectedSpan: z.number().optional().describe("Maximum anchor distance for two footprints on the same net, in mm"),
+    },
+    async ({ boardPath, edgeClearance, courtyardGap, maxConnectedSpan }) => {
+      const result = await callKicadScript("check_placement", {
+        boardPath,
+        edgeClearance,
+        courtyardGap,
+        maxConnectedSpan,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    },
+  );
+
+  server.tool(
+    "apply_placement",
+    {
+      boardPath: z.string().describe("Full path of the PCB that must be the only open board"),
+      strategy: z.enum(["led_switch"]).describe("Named placement rule set. This is not a general optimiser."),
+      width: z.number().optional().describe("Board width in mm. Default 50."),
+      height: z.number().optional().describe("Board height in mm. Default 40."),
+      edgeClearance: z.number().optional().describe("Courtyard-to-edge clearance in mm. Omitted led_switch placement uses 1.5 so connector reference text stays inside the outline."),
+      courtyardGap: z.number().optional().describe("Minimum gap between courtyards in mm"),
+      includeOutline: z.boolean().optional().describe("Add the centred rectangular Edge.Cuts outline when none exists"),
+    },
+    async ({ boardPath, strategy, width, height, edgeClearance, courtyardGap, includeOutline }) => {
+      const result = await callKicadScript("apply_placement", {
+        boardPath,
+        strategy,
+        width,
+        height,
+        edgeClearance,
+        courtyardGap,
+        includeOutline,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },
   );
 

@@ -331,15 +331,17 @@ export function registerRoutingTools(
   // Route pad to pad tool
   server.tool(
     "route_pad_to_pad",
-    "PREFERRED tool for pad-to-pad routing. Looks up pad positions automatically, detects the net from the pad, and — critically — if the two pads are on different copper layers (e.g. J1 on F.Cu and J2 on B.Cu) automatically inserts a via at the midpoint so the connection is complete. Always use this instead of route_trace when routing between named component pads.",
+    "PREFERRED tool for pad-to-pad routing. Requires the net name, checks that both pads are on that net, and refuses a route that would cross another net. A rejected request creates no track. Live edits use KiCad IPC. Pass boardPath of the only open PCB.",
     {
-      fromRef: z.string().describe("Reference of the source component (e.g. 'U2')"),
-      fromPad: z.union([z.string(), z.number()]).describe("Pad number on the source component (e.g. '6' or 6)"),
-      toRef: z.string().describe("Reference of the target component (e.g. 'U1')"),
-      toPad: z.union([z.string(), z.number()]).describe("Pad number on the target component (e.g. '15' or 15)"),
-      layer: z.string().optional().describe("PCB layer (default: F.Cu)"),
-      width: z.number().optional().describe("Trace width in mm (default: board default)"),
-      net: z.string().optional().describe("Net name override (default: auto-detected from pad)"),
+      fromRef: z.string().describe("Source footprint reference"),
+      fromPad: z.union([z.string(), z.number()]).describe("Source pad number"),
+      toRef: z.string().describe("Destination footprint reference"),
+      toPad: z.union([z.string(), z.number()]).describe("Destination pad number"),
+      net: z.string().describe("Net that both pads must already use"),
+      width: z.number().describe("Track width in mm. Valid range is 0.2 to 5"),
+      boardPath: z.string().describe("Full path of the only open PCB"),
+      layer: z.string().optional().describe("F.Cu or B.Cu. Default F.Cu"),
+      clearance: z.number().optional().describe("Copper clearance in mm. Default 0.2"),
     },
     async (args: any) => {
       const result = await callKicadScript("route_pad_to_pad", args);

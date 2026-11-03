@@ -115,7 +115,16 @@ def _extract_placed_symbols(sch_data) -> List[dict]:
         if not (isinstance(item, list) and item and item[0] == Symbol("symbol")):
             continue
 
-        info: dict = {"lib_id": None, "reference": None, "x": 0, "y": 0, "rotation": 0}
+        info: dict = {
+            "lib_id": None,
+            "reference": None,
+            "x": 0,
+            "y": 0,
+            "rotation": 0,
+            "mirror": None,
+            "unit": 1,
+            "style": 1,
+        }
         for sub in item[1:]:
             if not isinstance(sub, list) or len(sub) < 2:
                 continue
@@ -125,6 +134,12 @@ def _extract_placed_symbols(sch_data) -> List[dict]:
                 info["x"] = float(sub[1])
                 info["y"] = float(sub[2])
                 info["rotation"] = float(sub[3]) if len(sub) >= 4 else 0.0
+            elif sub[0] == Symbol("mirror") and len(sub) >= 2:
+                info["mirror"] = str(sub[1]).strip('"')
+            elif sub[0] == Symbol("unit") and len(sub) >= 2:
+                info["unit"] = int(sub[1])
+            elif sub[0] == Symbol("body_style") and len(sub) >= 2:
+                info["style"] = int(sub[1])
             elif sub[0] == Symbol("property"):
                 if len(sub) >= 3 and str(sub[1]).strip('"') == "Reference":
                     info["reference"] = str(sub[2]).strip('"')
@@ -210,58 +225,33 @@ def _get_pin_positions(
 
     Returns list of {"number": str, "name": str, "type": str, "x": float, "y": float}.
     """
-    import math
+    from commands.pin_locator import PinLocator
 
     lib_id = symbol_info["lib_id"]
     sym_def = lib_symbols.get(lib_id)
     if not sym_def:
         return []
 
-    pins = []
-
-    def _find_pins(sexp):
-        if not isinstance(sexp, list) or not sexp:
-            return
-        if sexp[0] == Symbol("pin"):
-            pin_type = str(sexp[1]) if len(sexp) > 1 else "passive"
-            px, py, angle = 0.0, 0.0, 0.0
-            name, number = "", ""
-            for sub in sexp[1:]:
-                if isinstance(sub, list) and sub:
-                    if sub[0] == Symbol("at") and len(sub) >= 3:
-                        px, py = float(sub[1]), float(sub[2])
-                        angle = float(sub[3]) if len(sub) >= 4 else 0.0
-                    elif sub[0] == Symbol("name") and len(sub) >= 2:
-                        name = str(sub[1]).strip('"')
-                    elif sub[0] == Symbol("number") and len(sub) >= 2:
-                        number = str(sub[1]).strip('"')
-            pins.append({
-                "number": number, "name": name, "type": pin_type,
-                "rel_x": px, "rel_y": py,
-            })
-            return
-        for sub in sexp:
-            if isinstance(sub, list):
-                _find_pins(sub)
-
-    _find_pins(sym_def)
-
-    # Apply rotation and translation
-    rotation = symbol_info["rotation"]
-    sx, sy = symbol_info["x"], symbol_info["y"]
+    raw_pins = PinLocator.parse_symbol_definition(sym_def)
+    pins = PinLocator.pins_for_unit(
+        raw_pins, symbol_info.get("unit", 1), symbol_info.get("style", 1)
+    )
     result = []
-    for p in pins:
-        rx, ry = p["rel_x"], p["rel_y"]
-        if rotation != 0:
-            rad = math.radians(rotation)
-            cos_a, sin_a = math.cos(rad), math.sin(rad)
-            rx, ry = rx * cos_a - ry * sin_a, rx * sin_a + ry * cos_a
+    for pin in pins.values():
+        x, y = PinLocator.sheet_pin_position(
+            symbol_info["x"],
+            symbol_info["y"],
+            symbol_info["rotation"],
+            pin["x"],
+            pin["y"],
+            symbol_info.get("mirror"),
+        )
         result.append({
-            "number": p["number"],
-            "name": p["name"],
-            "type": p["type"],
-            "x": sx + rx,
-            "y": sy + ry,
+            "number": pin["number"],
+            "name": pin["name"],
+            "type": pin["type"],
+            "x": x,
+            "y": y,
         })
     return result
 

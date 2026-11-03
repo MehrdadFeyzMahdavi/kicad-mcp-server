@@ -7,12 +7,12 @@ Uses S-expression parsing to extract pin data from symbol definitions.
 
 import logging
 import math
+import re
 import tempfile
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 import sexpdata
 from sexpdata import Symbol
-from skip import Schematic
 
 logger = logging.getLogger("kicad_interface")
 
@@ -40,12 +40,22 @@ class PinLocator:
                 "2": {"x": 0, "y": -3.81, "angle": 90, "length": 1.27, "name": "~", "type": "passive"}
             }
         """
-        pins = {}
+        pins = []
 
-        def extract_pins_recursive(sexp):
-            """Recursively search for pin definitions"""
+        def extract_pins_recursive(sexp, unit=0, style=1):
+            """Recursively search for pin definitions in one symbol unit."""
             if not isinstance(sexp, list):
                 return
+
+            if (
+                len(sexp) > 1
+                and sexp[0] == Symbol("symbol")
+                and not isinstance(sexp[1], list)
+            ):
+                match = re.search(r"_(\d+)_(\d+)$", str(sexp[1]).strip('"'))
+                if match:
+                    unit = int(match.group(1))
+                    style = int(match.group(2))
 
             # Check if this is a pin definition
             if len(sexp) > 0 and sexp[0] == Symbol("pin"):
@@ -58,6 +68,8 @@ class PinLocator:
                     "name": "",
                     "number": "",
                     "type": str(sexp[1]) if len(sexp) > 1 else "passive",
+                    "unit": unit,
+                    "style": style,
                 }
 
                 # Extract pin attributes
@@ -78,19 +90,21 @@ class PinLocator:
                         elif item[0] == Symbol("number") and len(item) >= 2:
                             pin_data["number"] = str(item[1]).strip('"')
 
-                # Store by pin number
                 if pin_data["number"]:
-                    pins[pin_data["number"]] = pin_data
+                    pins.append(pin_data)
+                return
 
             # Recurse into sublists
             for item in sexp:
                 if isinstance(item, list):
-                    extract_pins_recursive(item)
+                    extract_pins_recursive(item, unit, style)
 
         extract_pins_recursive(symbol_def)
         return pins
 
-    def get_symbol_pins(self, schematic_path: Path, lib_id: str) -> Dict[str, Dict]:
+    def get_symbol_pins(
+        self, schematic_path: Path, lib_id: str, unit: int = 1, style: int = 1
+    ) -> Dict[str, Dict]:
         """
         Get pin definitions for a symbol from the schematic's lib_symbols section
 
@@ -102,7 +116,7 @@ class PinLocator:
             Dictionary mapping pin number -> pin data
         """
         # Check cache
-        cache_key = f"{schematic_path}:{lib_id}"
+        cache_key = f"{schematic_path}:{lib_id}:{unit}:{style}"
         if cache_key in self.pin_definition_cache:
             logger.debug(f"Using cached pin data for {lib_id}")
             return self.pin_definition_cache[cache_key]
@@ -139,7 +153,9 @@ class PinLocator:
                     symbol_name = str(item[1]).strip('"')
                     if symbol_name == lib_id:
                         # Found the symbol, parse pins
-                        pins = self.parse_symbol_definition(item)
+                        pins = self.pins_for_unit(
+                            self.parse_symbol_definition(item), unit, style
+                        )
                         self.pin_definition_cache[cache_key] = pins
                         logger.info(f"Extracted {len(pins)} pins from {lib_id}")
                         return pins
@@ -179,67 +195,180 @@ class PinLocator:
 
         return (rotated_x, rotated_y)
 
+    @staticmethod
+    def pins_for_unit(pins, unit: int = 1, style: int = 1) -> Dict[str, Dict]:
+        """Keep pins for one symbol unit. Unit 0 graphics apply to every unit."""
+        selected = [
+            pin for pin in pins
+            if pin.get("unit") in (0, unit) and pin.get("style", 1) in (1, style)
+        ]
+        if not any(pin.get("unit") == unit for pin in selected):
+            selected = [
+                pin for pin in pins
+                if pin.get("unit") in (0, unit)
+            ]
+        chosen: Dict[str, Dict] = {}
+        for pin in selected:
+            number = pin["number"]
+            previous = chosen.get(number)
+            if previous is None or pin.get("unit") == unit:
+                chosen[number] = pin
+        return chosen
+
+    @staticmethod
+    def _library_transform(x: float, y: float, rotation: float, mirror: Optional[str]):
+        """Mirror and rotate a library point. Library Y increases upward."""
+        if mirror == "x":
+            y = -y
+        elif mirror == "y":
+            x = -x
+        quarter = int(round(float(rotation or 0))) % 360
+        if quarter == 0:
+            return x, y
+        if quarter == 90:
+            return -y, x
+        if quarter == 180:
+            return -x, -y
+        if quarter == 270:
+            return y, -x
+        radians = math.radians(quarter)
+        cosine = math.cos(radians)
+        sine = math.sin(radians)
+        return x * cosine - y * sine, x * sine + y * cosine
+
+    @staticmethod
+    def sheet_pin_position(
+        symbol_x: float,
+        symbol_y: float,
+        rotation: float,
+        pin_x: float,
+        pin_y: float,
+        mirror: Optional[str] = None,
+    ) -> Tuple[float, float]:
+        """Map a library pin to schematic sheet coordinates.
+
+        Library coordinates have Y upward. The schematic sheet has Y downward,
+        so the transformed Y is subtracted from the symbol position. Rotation is
+        counterclockwise in the library frame, which is counterclockwise on the
+        sheet as well.
+        """
+        relative_x, relative_y = PinLocator._library_transform(
+            float(pin_x), float(pin_y), rotation, mirror
+        )
+        return (
+            round(float(symbol_x) + relative_x, 6),
+            round(float(symbol_y) - relative_y, 6),
+        )
+
+    @staticmethod
+    def sheet_outward_angle(
+        pin_angle: float, rotation: float, mirror: Optional[str] = None
+    ) -> float:
+        """Direction a stub must leave the pin, with 0 = right and 90 = up."""
+        outward = (float(pin_angle) + 180.0) % 360.0
+        radians = math.radians(outward)
+        dx, dy = PinLocator._library_transform(
+            math.cos(radians), math.sin(radians), rotation, mirror
+        )
+        return math.degrees(math.atan2(dy, dx)) % 360.0
+
+    def _load_schematic(self, schematic_path: Path):
+        key = str(schematic_path)
+        mtime = schematic_path.stat().st_mtime
+        cached = self._schematic_cache.get(key)
+        if cached and cached[0] == mtime:
+            return cached[1]
+        with open(schematic_path, "r", encoding="utf-8") as handle:
+            data = sexpdata.loads(handle.read())
+        self._schematic_cache[key] = (mtime, data)
+        self.pin_definition_cache = {
+            cache_key: value
+            for cache_key, value in self.pin_definition_cache.items()
+            if not str(cache_key).startswith(key + ":")
+        }
+        return data
+
+    @staticmethod
+    def _token(value) -> str:
+        return str(value).strip('"')
+
+    def _placed_symbol(self, schematic_path: Path, symbol_reference: str) -> Optional[dict]:
+        """Read one placed symbol's position, rotation, mirror, and unit."""
+        data = self._load_schematic(schematic_path)
+        for item in data:
+            if not (isinstance(item, list) and item and item[0] == Symbol("symbol")):
+                continue
+            if len(item) < 2 or not isinstance(item[1], list):
+                continue
+            info = {
+                "lib_id": None,
+                "reference": None,
+                "x": 0.0,
+                "y": 0.0,
+                "rotation": 0.0,
+                "mirror": None,
+                "unit": 1,
+                "style": 1,
+            }
+            for sub in item[1:]:
+                if not isinstance(sub, list) or not sub:
+                    continue
+                if sub[0] == Symbol("lib_id") and len(sub) >= 2:
+                    info["lib_id"] = self._token(sub[1])
+                elif sub[0] == Symbol("at") and len(sub) >= 3:
+                    info["x"] = float(sub[1])
+                    info["y"] = float(sub[2])
+                    info["rotation"] = float(sub[3]) if len(sub) >= 4 else 0.0
+                elif sub[0] == Symbol("mirror") and len(sub) >= 2:
+                    info["mirror"] = self._token(sub[1])
+                elif sub[0] == Symbol("unit") and len(sub) >= 2:
+                    info["unit"] = int(sub[1])
+                elif sub[0] == Symbol("body_style") and len(sub) >= 2:
+                    info["style"] = int(sub[1])
+                elif (
+                    sub[0] == Symbol("property")
+                    and len(sub) >= 3
+                    and self._token(sub[1]) == "Reference"
+                ):
+                    info["reference"] = self._token(sub[2])
+            if info["reference"] == symbol_reference:
+                return info
+        return None
+
+    def _resolve_pin(self, pins: Dict[str, Dict], pin_number: str) -> Optional[str]:
+        if pin_number in pins:
+            return pin_number
+        return next(
+            (num for num, data in pins.items() if data.get("name") == pin_number),
+            None,
+        )
+
     def _get_lib_id(self, schematic_path: Path, symbol_reference: str) -> Optional[str]:
         """Helper: return the lib_id string for a placed symbol"""
-        try:
-            sch_key = str(schematic_path)
-            if sch_key not in self._schematic_cache:
-                self._schematic_cache[sch_key] = Schematic(sch_key)
-            sch = self._schematic_cache[sch_key]
-            for symbol in sch.symbol:
-                if symbol.property.Reference.value == symbol_reference:
-                    return symbol.lib_id.value if hasattr(symbol, "lib_id") else None
-        except Exception:
-            pass
-        return None
+        placed = self._placed_symbol(schematic_path, symbol_reference)
+        return placed.get("lib_id") if placed else None
 
     def get_pin_angle(
         self, schematic_path: Path, symbol_reference: str, pin_number: str
     ) -> Optional[float]:
         """
-        Get the outward angle of a pin endpoint in degrees (0=right, 90=up, 180=left, 270=down).
-        This is the direction a wire stub must extend to stay connected to the pin.
-
-        Returns angle in degrees, or None if pin not found.
+        Outward stub direction in degrees. 0 is right and 90 is up on the sheet.
         """
         try:
-            sch_key = str(schematic_path)
-            if sch_key not in self._schematic_cache:
-                self._schematic_cache[sch_key] = Schematic(sch_key)
-            sch = self._schematic_cache[sch_key]
-
-            target_symbol = None
-            for symbol in sch.symbol:
-                if symbol.property.Reference.value == symbol_reference:
-                    target_symbol = symbol
-                    break
-
-            if not target_symbol:
+            placed = self._placed_symbol(schematic_path, symbol_reference)
+            if not placed or not placed.get("lib_id"):
                 return None
-
-            symbol_at = target_symbol.at.value
-            symbol_rotation = float(symbol_at[2]) if len(symbol_at) > 2 else 0.0
-
-            lib_id = target_symbol.lib_id.value if hasattr(target_symbol, "lib_id") else None
-            if not lib_id:
+            pins = self.get_symbol_pins(
+                schematic_path, placed["lib_id"], placed["unit"], placed["style"]
+            )
+            resolved = self._resolve_pin(pins, pin_number)
+            if resolved is None:
                 return None
-
-            pins = self.get_symbol_pins(schematic_path, lib_id)
-            if pin_number not in pins:
-                matched_num = next(
-                    (num for num, data in pins.items() if data.get("name") == pin_number),
-                    None,
-                )
-                if matched_num:
-                    pin_number = matched_num
-                else:
-                    return None
-
-            # Pin definition angle + symbol rotation = absolute outward direction
-            pin_def_angle = pins[pin_number].get("angle", 0)
-            absolute_angle = (pin_def_angle + symbol_rotation) % 360
-            return absolute_angle
-
+            return self.sheet_outward_angle(
+                pins[resolved].get("angle", 0),
+                placed["rotation"],
+                placed["mirror"],
+            )
         except Exception:
             return None
 
@@ -258,91 +387,41 @@ class PinLocator:
             [x, y] absolute coordinates of the pin, or None if not found
         """
         try:
-            # Load schematic with kicad-skip to get symbol instance
-            # Use cache to avoid reloading the file for every pin lookup
-            sch_key = str(schematic_path)
-            if sch_key not in self._schematic_cache:
-                self._schematic_cache[sch_key] = Schematic(sch_key)
-            sch = self._schematic_cache[sch_key]
-
-            # Find the symbol instance
-            target_symbol = None
-            for symbol in sch.symbol:
-                ref = symbol.property.Reference.value
-                if ref == symbol_reference:
-                    target_symbol = symbol
-                    break
-
-            if not target_symbol:
+            placed = self._placed_symbol(schematic_path, symbol_reference)
+            if not placed:
                 logger.error(f"Symbol {symbol_reference} not found in schematic")
                 return None
-
-            # Get symbol position and rotation
-            symbol_at = target_symbol.at.value
-            symbol_x = float(symbol_at[0])
-            symbol_y = float(symbol_at[1])
-            symbol_rotation = float(symbol_at[2]) if len(symbol_at) > 2 else 0.0
-
-            # Get symbol lib_id
-            lib_id = (
-                target_symbol.lib_id.value if hasattr(target_symbol, "lib_id") else None
-            )
+            lib_id = placed.get("lib_id")
             if not lib_id:
                 logger.error(f"Symbol {symbol_reference} has no lib_id")
                 return None
 
-            logger.debug(
-                f"Symbol {symbol_reference}: pos=({symbol_x}, {symbol_y}), rot={symbol_rotation}, lib_id={lib_id}"
+            pins = self.get_symbol_pins(
+                schematic_path, lib_id, placed["unit"], placed["style"]
             )
-
-            # Get pin definitions for this symbol
-            pins = self.get_symbol_pins(schematic_path, lib_id)
             if not pins:
                 logger.error(f"No pin definitions found for {lib_id}")
                 return None
 
-            # Find the requested pin — match by number first, then by name
-            if pin_number not in pins:
-                # Try matching by pin name (e.g. "VCC1", "SDA", "GND")
-                matched_num = next(
-                    (num for num, data in pins.items() if data.get("name") == pin_number),
-                    None,
+            resolved = self._resolve_pin(pins, pin_number)
+            if resolved is None:
+                logger.error(
+                    f"Pin {pin_number} not found on {symbol_reference}. "
+                    f"Available pins: {list(pins.keys())}"
                 )
-                if matched_num:
-                    logger.debug(f"Resolved pin name '{pin_number}' to pin number '{matched_num}' on {symbol_reference}")
-                    pin_number = matched_num
-                else:
-                    logger.error(
-                        f"Pin {pin_number} not found on {symbol_reference}. Available pins: {list(pins.keys())} "
-                        f"(names: {[d.get('name','') for d in pins.values()]})"
-                    )
-                    return None
+                return None
 
-            pin_data = pins[pin_number]
-
-            # Get pin position relative to symbol origin
-            pin_rel_x = pin_data["x"]
-            pin_rel_y = pin_data["y"]
-
-            logger.debug(
-                f"Pin {pin_number} relative position: ({pin_rel_x}, {pin_rel_y})"
+            pin_data = pins[resolved]
+            abs_x, abs_y = self.sheet_pin_position(
+                placed["x"],
+                placed["y"],
+                placed["rotation"],
+                pin_data["x"],
+                pin_data["y"],
+                placed["mirror"],
             )
-
-            # Apply symbol rotation to pin position
-            if symbol_rotation != 0:
-                pin_rel_x, pin_rel_y = self.rotate_point(
-                    pin_rel_x, pin_rel_y, symbol_rotation
-                )
-                logger.debug(
-                    f"After rotation {symbol_rotation}°: ({pin_rel_x}, {pin_rel_y})"
-                )
-
-            # Calculate absolute position
-            abs_x = symbol_x + pin_rel_x
-            abs_y = symbol_y + pin_rel_y
-
             logger.info(
-                f"Pin {symbol_reference}/{pin_number} located at ({abs_x}, {abs_y})"
+                f"Pin {symbol_reference}/{resolved} located at ({abs_x}, {abs_y})"
             )
             return [abs_x, abs_y]
 
@@ -367,33 +446,14 @@ class PinLocator:
             Dictionary mapping pin number -> [x, y] coordinates
         """
         try:
-            # Load schematic (use cache)
-            sch_key = str(schematic_path)
-            if sch_key not in self._schematic_cache:
-                self._schematic_cache[sch_key] = Schematic(sch_key)
-            sch = self._schematic_cache[sch_key]
-
-            # Find symbol
-            target_symbol = None
-            for symbol in sch.symbol:
-                if symbol.property.Reference.value == symbol_reference:
-                    target_symbol = symbol
-                    break
-
-            if not target_symbol:
+            placed = self._placed_symbol(schematic_path, symbol_reference)
+            if not placed or not placed.get("lib_id"):
                 logger.error(f"Symbol {symbol_reference} not found")
                 return {}
 
-            # Get lib_id
-            lib_id = (
-                target_symbol.lib_id.value if hasattr(target_symbol, "lib_id") else None
+            pins = self.get_symbol_pins(
+                schematic_path, placed["lib_id"], placed["unit"], placed["style"]
             )
-            if not lib_id:
-                logger.error(f"Symbol {symbol_reference} has no lib_id")
-                return {}
-
-            # Get pin definitions
-            pins = self.get_symbol_pins(schematic_path, lib_id)
             if not pins:
                 return {}
 

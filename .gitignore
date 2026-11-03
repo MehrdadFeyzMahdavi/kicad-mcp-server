@@ -88,3 +88,10 @@ Desktop.ini
 
 # Personal notes / local contributions (not for upstream)
 myContribution/
+
+# Local machine config and working copies
+windows-mcp-config.json
+*.bak
+*.backup-*
+*.before-*
+*.before_*

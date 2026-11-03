@@ -1,0 +1,236 @@
+{
+  "steps": [
+    {
+      "name": "ipc_connected",
+      "result": {
+        "openPaths": [
+          "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_pcb"
+        ],
+        "useIpc": true
+      }
+    },
+    {
+      "name": "baseline",
+      "result": {
+        "boardInfo": {
+          "success": true,
+          "boardInfo": {
+            "size": {
+              "width": 150.05,
+              "height": 110.05,
+              "unit": "mm"
+            },
+            "componentCount": 73,
+            "trackCount": 545,
+            "viaCount": 24,
+            "netCount": 50,
+            "backend": "ipc",
+            "realtime": true
+          },
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "componentCount": 73,
+        "hasRPlace": true,
+        "backend": "ipc",
+        "realtime": true
+      }
+    },
+    {
+      "name": "baseline_counts",
+      "result": {
+        "tracks": 545,
+        "shapes": 914,
+        "files": {
+          "phase3": {
+            "path": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_pcb",
+            "size": 1756123,
+            "mtime": 1793520690.2737627,
+            "sha256": "04514a3e851369cee2364171711f0496c63ad3a89a1507cecd9fdbbc1146bbd8"
+          },
+          "original": {
+            "path": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-move-test.kicad_pcb",
+            "size": 1756123,
+            "mtime": 1793520690.2737627,
+            "sha256": "04514a3e851369cee2364171711f0496c63ad3a89a1507cecd9fdbbc1146bbd8"
+          }
+        }
+      }
+    },
+    {
+      "name": "ipc_unavailable",
+      "result": {
+        "response": {
+          "success": false,
+          "error": "IPC_UNAVAILABLE",
+          "message": "Live PCB editing requires an active KiCad IPC connection.",
+          "_backend": "unavailable",
+          "_realtime": false
+        },
+        "trackCountAfter": 545,
+        "unchanged": true
+      }
+    },
+    {
+      "name": "add_trace",
+      "result": {
+        "request": {
+          "start": {
+            "x": 500.0,
+            "y": 500.0,
+            "unit": "mm"
+          },
+          "end": {
+            "x": 501.25,
+            "y": 500.0,
+            "unit": "mm"
+          },
+          "layer": "F.Cu",
+          "width": 0.2,
+          "net": "PHASE3_TEMP_NET"
+        },
+        "response": {
+          "success": true,
+          "message": "Added trace (visible in KiCAD UI)",
+          "trace": {
+            "start": {
+              "x": 500.0,
+              "y": 500.0,
+              "unit": "mm"
+            },
+            "end": {
+              "x": 501.25,
+              "y": 500.0,
+              "unit": "mm"
+            },
+            "layer": "F.Cu",
+            "width": 0.2,
+            "net": "PHASE3_TEMP_NET"
+          },
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "newRaw": [
+          {
+            "value": "7d0e8b06-4fc1-43f5-b4e2-17261d151a01",
+            "text": "value: \"7d0e8b06-4fc1-43f5-b4e2-17261d151a01\"\n",
+            "start": [
+              500.0,
+              500.0
+            ],
+            "end": [
+              501.25,
+              500.0
+            ],
+            "net": ""
+          }
+        ],
+        "newReported": [
+          {
+            "start": {
+              "x": 500.0,
+              "y": 500.0
+            },
+            "end": {
+              "x": 501.25,
+              "y": 500.0
+            },
+            "width": 0.2,
+            "layer": "3",
+            "net": "",
+            "id": "value: \"7d0e8b06-4fc1-43f5-b4e2-17261d151a01\"\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "delete_trace",
+      "result": {
+        "request": {
+          "traceUuid": "7d0e8b06-4fc1-43f5-b4e2-17261d151a01"
+        },
+        "response": {
+          "success": true,
+          "message": "Deleted 1 trace(s)",
+          "deletedCount": 1,
+          "deletedIds": [
+            "7d0e8b06-4fc1-43f5-b4e2-17261d151a01"
+          ],
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "createdStillPresent": false,
+        "trackCount": 545,
+        "missingPreexistingSample": [],
+        "missingPreexistingCount": 0
+      }
+    },
+    {
+      "name": "trace_undo_redo",
+      "result": {
+        "undo": "status: RAS_OK\n",
+        "restored": true,
+        "redo": "status: RAS_OK\n",
+        "removedAgain": true,
+        "trackCount": 545
+      }
+    },
+    {
+      "name": "add_outline",
+      "result": {
+        "request": {
+          "shape": "rectangle",
+          "width": 1.2,
+          "height": 0.8,
+          "x": 520.0,
+          "y": 520.0,
+          "unit": "mm"
+        },
+        "response": {
+          "success": true,
+          "message": "Added rectangle board outline through IPC",
+          "shape": "rectangle",
+          "segments": 1,
+          "ids": [
+            "bd59055d-c9a3-40ee-8e77-9b090f18dbed"
+          ],
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "newShapeIds": [
+          "bd59055d-c9a3-40ee-8e77-9b090f18dbed"
+        ],
+        "shapeCount": 915
+      }
+    },
+    {
+      "name": "outline_undo",
+      "result": {
+        "undo": "status: RAS_OK\n",
+        "newShapesRemain": [],
+        "shapeCount": 914
+      }
+    },
+    {
+      "name": "files_after",
+      "result": {
+        "phase3": {
+          "path": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_pcb",
+          "size": 1756123,
+          "mtime": 1793520690.2737627,
+          "sha256": "04514a3e851369cee2364171711f0496c63ad3a89a1507cecd9fdbbc1146bbd8"
+        },
+        "original": {
+          "path": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-move-test.kicad_pcb",
+          "size": 1756123,
+          "mtime": 1793520690.2737627,
+          "sha256": "04514a3e851369cee2364171711f0496c63ad3a89a1507cecd9fdbbc1146bbd8"
+        },
+        "openPaths": [
+          "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_pcb"
+        ]
+      }
+    }
+  ],
+  "error": null
+}

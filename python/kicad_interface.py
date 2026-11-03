@@ -239,6 +239,16 @@ except ImportError as e:
     print(json.dumps(error_response))
     sys.exit(1)
 
+from kicad_api.pcb_safety import (
+    GUARDED_PCB_COMMANDS,
+    access_purpose,
+    evaluate_pcb_file_access,
+    ipc_unavailable_result,
+    lock_file_present,
+    normalize_pcb_path,
+    swig_target_paths,
+)
+
 
 class KiCADInterface:
     """Main interface class to handle KiCAD operations"""
@@ -250,6 +260,8 @@ class KiCADInterface:
         self.use_ipc = USE_IPC_BACKEND
         self.ipc_backend = ipc_backend
         self.ipc_board_api = None
+        self._offline_owned_pcb_paths = set()
+        self._live_paths_unknown = False
 
         if self.use_ipc:
             logger.info("Initializing with IPC backend (real-time UI sync enabled)")
@@ -293,9 +305,9 @@ class KiCADInterface:
         # Command routing dictionary
         self.command_routes = {
             # Project commands
-            "create_project": self.project_commands.create_project,
-            "open_project": self.project_commands.open_project,
-            "save_project": self.project_commands.save_project,
+            "create_project": self._guarded_create_project,
+            "open_project": self._guarded_open_project,
+            "save_project": self._guarded_save_project,
             "snapshot_project": self._handle_snapshot_project,
             "get_project_info": self.project_commands.get_project_info,
             # Board commands
@@ -311,7 +323,7 @@ class KiCADInterface:
             "add_text": self.board_commands.add_text,
             "add_board_text": self.board_commands.add_text,  # Alias for TypeScript tool
             # Component commands
-            "route_pad_to_pad": self.routing_commands.route_pad_to_pad,
+            "route_pad_to_pad": self._refuse_offline_route,
             "place_component": self._handle_place_component,
             "move_component": self.component_commands.move_component,
             "rotate_component": self.component_commands.rotate_component,
@@ -319,6 +331,9 @@ class KiCADInterface:
             "edit_component": self.component_commands.edit_component,
             "get_component_properties": self.component_commands.get_component_properties,
             "get_component_list": self.component_commands.get_component_list,
+            "get_footprint_geometry": self._refuse_offline_placement,
+            "check_placement": self._refuse_offline_placement,
+            "apply_placement": self._refuse_offline_placement,
             "find_component": self.component_commands.find_component,
             "get_component_pads": self.component_commands.get_component_pads,
             "get_pad_position": self.component_commands.get_pad_position,
@@ -426,6 +441,14 @@ class KiCADInterface:
             "export_dsn": self.freerouting_commands.export_dsn,
             "import_ses": self.freerouting_commands.import_ses,
             "check_freerouting": self.freerouting_commands.check_freerouting,
+            "add_wire": self._phase5_add_wire,
+            "add_net_class": self._phase5_add_net_class,
+            "assign_net_to_class": self._phase5_assign_net_to_class,
+            "check_clearance": self._phase5_check_clearance,
+            "replace_component": self._phase5_replace_component,
+            "set_layer_constraints": self._phase5_set_layer_constraints,
+            "export_netlist": self._phase5_export_netlist,
+            "export_vrml": self._phase5_export_vrml,
         }
 
         logger.info(
@@ -436,6 +459,7 @@ class KiCADInterface:
     IPC_CAPABLE_COMMANDS = {
         # Routing commands
         "route_trace": "_ipc_route_trace",
+        "route_pad_to_pad": "_ipc_route_pad_to_pad",
         "add_via": "_ipc_add_via",
         "add_net": "_ipc_add_net",
         "delete_trace": "_ipc_delete_trace",
@@ -454,75 +478,60 @@ class KiCADInterface:
         # Component commands
         "place_component": "_ipc_place_component",
         "move_component": "_ipc_move_component",
+        "clone_component": "_ipc_clone_component",
         "rotate_component": "_ipc_rotate_component",
         "delete_component": "_ipc_delete_component",
         "get_component_list": "_ipc_get_component_list",
+        "get_footprint_geometry": "_ipc_get_footprint_geometry",
+        "check_placement": "_ipc_check_placement",
+        "apply_placement": "_ipc_apply_placement",
         "get_component_properties": "_ipc_get_component_properties",
         # Save command
         "save_project": "_ipc_save_project",
+        "add_zone": "_ipc_add_zone",
+        "add_component_annotation": "_ipc_add_component_annotation",
+        "group_components": "_ipc_group_components",
+        "export_position_file": "_ipc_export_position_file",
     }
 
     def handle_command(self, command: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Route command to appropriate handler, preferring IPC when available"""
+        """Route a command. Live IPC commands never fall back to SWIG."""
         logger.info(f"Handling command: {command}")
         logger.debug(f"Command parameters: {params}")
+        params = params or {}
 
         try:
-            # Check if we can use IPC for this command (real-time UI sync)
-            if (
-                self.use_ipc
-                and self.ipc_board_api
-                and command in self.IPC_CAPABLE_COMMANDS
-            ):
+            if self.use_ipc and command in self.IPC_CAPABLE_COMMANDS:
                 ipc_handler_name = self.IPC_CAPABLE_COMMANDS[command]
                 ipc_handler = getattr(self, ipc_handler_name, None)
+                if not self.ipc_board_api or ipc_handler is None:
+                    logger.warning(
+                        "IPC is required for %s and is not connected. SWIG was not called.",
+                        command,
+                    )
+                    return ipc_unavailable_result()
 
-                if ipc_handler:
-                    logger.info(f"Using IPC backend for {command} (real-time sync)")
-                    result = ipc_handler(params)
-
-                    # Add indicator that IPC was used
-                    if isinstance(result, dict):
-                        result["_backend"] = "ipc"
-                        result["_realtime"] = True
-
-                    logger.debug(f"IPC command result: {result}")
-                    return result
-
-            # Fall back to SWIG-based handler
-            if self.use_ipc and command in self.IPC_CAPABLE_COMMANDS:
-                logger.warning(
-                    f"IPC handler not available for {command}, falling back to SWIG (deprecated)"
-                )
-
-            # Get the handler for the command
-            handler = self.command_routes.get(command)
-
-            if handler:
-                # Execute the command
-                result = handler(params)
-                logger.debug(f"Command result: {result}")
-
-                # Add backend indicator
-                if isinstance(result, dict):
-                    result["_backend"] = "swig"
-                    result["_realtime"] = False
-
-                # Update board reference if command was successful
-                if result.get("success", False):
-                    if command == "create_project" or command == "open_project":
-                        logger.info("Updating board reference...")
-                        # Get board from the project commands handler
-                        self.board = self.project_commands.board
-                        self._update_command_handlers()
-                    elif command in self._BOARD_MUTATING_COMMANDS:
-                        # Auto-save after every board mutation via SWIG.
-                        # Prevents data loss if Claude hits context limit before
-                        # an explicit save_project call.
-                        self._auto_save_board()
-
+                logger.info(f"Using IPC backend for {command} (real-time sync)")
+                result = self._label_ipc_result(ipc_handler(params))
+                logger.debug(f"IPC command result: {result}")
                 return result
-            else:
+
+            refusal = self._refuse_unsafe_pcb_file_access(command, params)
+            if refusal is not None:
+                return refusal
+
+            handler = self.command_routes.get(command)
+            if not handler:
+                if command in self.IPC_CAPABLE_COMMANDS:
+                    return {
+                        "success": False,
+                        "error": "IPC_REQUIRED",
+                        "message": (
+                            "This operation is only available through the KiCad IPC connection."
+                        ),
+                        "_backend": "unavailable",
+                        "_realtime": False,
+                    }
                 logger.error(f"Unknown command: {command}")
                 return {
                     "success": False,
@@ -530,8 +539,37 @@ class KiCADInterface:
                     "errorDetails": "The specified command is not supported",
                 }
 
+            result = handler(params)
+            logger.debug(f"Command result: {result}")
+            if isinstance(result, dict) and result.pop("_keep_backend", False):
+                result["_realtime"] = False
+                result.setdefault("_backend", "unavailable")
+                return result
+            if isinstance(result, dict):
+                result["_backend"] = "swig"
+                result["_realtime"] = False
+
+            if isinstance(result, dict) and result.get("success", False):
+                if command in ("create_project", "open_project"):
+                    logger.info("Updating board reference...")
+                    self.board = self.project_commands.board
+                    self._update_command_handlers()
+                    self._remember_offline_board()
+                elif command in (
+                    "place_component",
+                    "sync_schematic_to_board",
+                    "import_svg_logo",
+                    "refill_zones",
+                ):
+                    self._remember_offline_board()
+                if (
+                    command in self._BOARD_MUTATING_COMMANDS
+                    and command != "sync_schematic_to_board"
+                ):
+                    self._auto_save_board(result)
+            return result
+
         except Exception as e:
-            # Get the full traceback
             traceback_str = traceback.format_exc()
             logger.error(f"Error handling command {command}: {str(e)}\n{traceback_str}")
             return {
@@ -562,19 +600,149 @@ class KiCADInterface:
         "connect_passthrough",
     }
 
-    def _auto_save_board(self):
-        """Save board to disk after SWIG mutations.
-        Called automatically after every board-mutating SWIG command so that
-        data is not lost if Claude hits the context limit before save_project.
-        """
+    def _label_ipc_result(self, result: Any) -> Dict[str, Any]:
+        """Mark an IPC result. A SWIG delegation is never reported as realtime IPC."""
+        if not isinstance(result, dict):
+            return {
+                "success": False,
+                "error": "IPC_PROTOCOL",
+                "message": "IPC handler returned a non-object result",
+                "_backend": "unavailable",
+                "_realtime": False,
+            }
+        if result.pop("_delegated_to_swig", False):
+            result["success"] = False
+            result["error"] = "IPC_DELEGATION_BLOCKED"
+            result["message"] = (
+                "An IPC handler tried to modify the board through SWIG. The operation was rejected."
+            )
+            result["_backend"] = "unavailable"
+            result["_realtime"] = False
+            return result
+        result["_backend"] = "ipc"
+        result["_realtime"] = bool(result.get("success"))
+        return result
+
+    def _swig_board_path(self) -> str:
+        board = getattr(self, "board", None)
+        if not board:
+            return ""
         try:
-            if self.board:
-                board_path = self.board.GetFileName()
-                if board_path:
-                    pcbnew.SaveBoard(board_path, self.board)
-                    logger.debug(f"Auto-saved board to: {board_path}")
+            return board.GetFileName() or ""
+        except Exception:
+            return ""
+
+    def _live_editor_paths(self) -> list:
+        api = getattr(self, "ipc_board_api", None)
+        if not api or not hasattr(api, "_open_pcb_paths"):
+            return []
+        try:
+            paths = [path for path in api._open_pcb_paths() if path]
+            self._live_paths_unknown = False
+            return paths
+        except Exception as exc:
+            logger.warning("Could not list open PCB documents: %s", exc)
+            self._live_paths_unknown = True
+            return []
+
+    def _remember_offline_board(self) -> None:
+        path = self._swig_board_path()
+        if not path:
+            return
+        self._offline_owned_pcb_paths.add(normalize_pcb_path(path))
+
+    def _path_is_owned(self, path: str) -> bool:
+        if not path:
+            return False
+        try:
+            return normalize_pcb_path(path) in self._offline_owned_pcb_paths
+        except OSError:
+            return False
+
+    def _file_decision(self, path: str, purpose: str) -> Dict[str, Any]:
+        return evaluate_pcb_file_access(
+            path,
+            live_paths=self._live_editor_paths(),
+            locked=bool(lock_file_present(path)),
+            use_ipc=bool(self.use_ipc),
+            purpose=purpose,
+            owned=self._path_is_owned(path),
+            live_paths_unknown=bool(self._live_paths_unknown),
+        )
+
+    def _file_refusal(self, path: str, purpose: str) -> Optional[Dict[str, Any]]:
+        decision = self._file_decision(path, purpose)
+        if decision.get("allow"):
+            return None
+        return {
+            "success": False,
+            "error": decision.get("error", "EDITOR_OWNS_FILE"),
+            "message": decision.get("message", "Refusing to load or overwrite the PCB file."),
+            "_backend": "swig",
+            "_realtime": False,
+        }
+
+    def _refuse_unsafe_pcb_file_access(
+        self, command: str, params: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        if command not in GUARDED_PCB_COMMANDS:
+            return None
+        paths = swig_target_paths(command, params, self._swig_board_path())
+        if not paths:
+            return None
+        purpose = access_purpose(command)
+        for path in paths:
+            refusal = self._file_refusal(path, purpose)
+            if refusal is not None:
+                logger.warning(
+                    "Refusing %s on %s: %s", command, path, refusal.get("message")
+                )
+                return refusal
+        return None
+
+    def _guarded_create_project(self, params):
+        refusal = self._refuse_unsafe_pcb_file_access("create_project", params)
+        if refusal is not None:
+            return refusal
+        return self.project_commands.create_project(params)
+
+    def _guarded_open_project(self, params):
+        refusal = self._refuse_unsafe_pcb_file_access("open_project", params)
+        if refusal is not None:
+            return refusal
+        return self.project_commands.open_project(params)
+
+    def _guarded_save_project(self, params):
+        refusal = self._refuse_unsafe_pcb_file_access("save_project", params)
+        if refusal is not None:
+            return refusal
+        return self.project_commands.save_project(params)
+
+    def _auto_save_board(self, result: Optional[Dict[str, Any]] = None):
+        """Save an offline SWIG board only when this process owns the file.
+
+        A board that is open in the PCB editor is never written from here.
+        """
+        board_path = self._swig_board_path()
+        if not board_path:
+            return
+        decision = self._file_decision(board_path, "autosave")
+        if not decision.get("allow"):
+            logger.warning("Auto-save skipped: %s", decision.get("reason"))
+            if isinstance(result, dict):
+                result["fileSaved"] = False
+                result["fileSaveSkipped"] = decision.get("reason")
+            return
+        try:
+            pcbnew.SaveBoard(board_path, self.board)
+            logger.debug(f"Auto-saved offline board to: {board_path}")
+            if isinstance(result, dict):
+                result["fileSaved"] = True
         except Exception as e:
             logger.warning(f"Auto-save failed: {e}")
+            if isinstance(result, dict):
+                result["fileSaved"] = False
+                result["fileSaveSkipped"] = str(e)
 
     def _update_command_handlers(self):
         """Update board reference in all command handlers"""
@@ -658,6 +826,9 @@ class KiCADInterface:
 
         board_path = params.get("boardPath")
         if board_path:
+            refusal = self._file_refusal(board_path, "swig_load")
+            if refusal is not None:
+                return refusal
             board_path_norm = str(Path(board_path).resolve())
             current_board_file = (
                 str(Path(self.board.GetFileName()).resolve()) if self.board else ""
@@ -711,6 +882,9 @@ class KiCADInterface:
             footprint = component.get("footprint", "")
             x = component.get("x", 0)
             y = component.get("y", 0)
+            rotation = component.get("rotation", 0)
+            mirror = component.get("mirror")
+            unit = component.get("unit", 1)
 
             # Derive project path from schematic path for project-local library resolution
             schematic_file = Path(schematic_path)
@@ -726,6 +900,9 @@ class KiCADInterface:
                 footprint=footprint,
                 x=x,
                 y=y,
+                rotation=rotation,
+                mirror=mirror,
+                unit=unit,
                 project_path=derived_project_path,
             )
 
@@ -2361,49 +2538,24 @@ class KiCADInterface:
                     cmd, capture_output=True, text=True, timeout=120
                 )
 
-                if result.returncode != 0:
+                if not os.path.exists(json_output) or os.path.getsize(json_output) == 0:
                     logger.error(f"ERC command failed: {result.stderr}")
                     return {
                         "success": False,
+                        "ercPassed": False,
                         "message": "ERC command failed",
-                        "errorDetails": result.stderr,
+                        "errorDetails": result.stderr or result.stdout,
+                        "exitCode": result.returncode,
                     }
 
                 with open(json_output, "r", encoding="utf-8") as f:
                     erc_data = json.load(f)
 
-                violations = []
-                severity_counts = {"error": 0, "warning": 0, "info": 0}
+                from commands.erc_report import parse_kicad_erc_report
 
-                for v in erc_data.get("violations", []):
-                    vseverity = v.get("severity", "error")
-                    items = v.get("items", [])
-                    loc = {}
-                    if items and "pos" in items[0]:
-                        loc = {
-                            "x": items[0]["pos"].get("x", 0),
-                            "y": items[0]["pos"].get("y", 0),
-                        }
-                    violations.append(
-                        {
-                            "type": v.get("type", "unknown"),
-                            "severity": vseverity,
-                            "message": v.get("description", ""),
-                            "location": loc,
-                        }
-                    )
-                    if vseverity in severity_counts:
-                        severity_counts[vseverity] += 1
-
-                return {
-                    "success": True,
-                    "message": f"ERC complete: {len(violations)} violation(s)",
-                    "summary": {
-                        "total": len(violations),
-                        "by_severity": severity_counts,
-                    },
-                    "violations": violations,
-                }
+                parsed = parse_kicad_erc_report(erc_data)
+                parsed["exitCode"] = result.returncode
+                return parsed
 
             finally:
                 if os.path.exists(json_output):
@@ -2437,8 +2589,12 @@ class KiCADInterface:
             return {"success": False, "message": str(e)}
 
     def _handle_sync_schematic_to_board(self, params):
-        """Sync schematic netlist to PCB board (equivalent to KiCAD F8 'Update PCB from Schematic').
-        Reads net connections from the schematic and assigns them to the matching pads in the PCB.
+        """Create or update an offline PCB from the schematic.
+
+        The KiCad netlist exported by kicad-cli is the authority. Library
+        footprints are loaded and their pads are assigned those nets. The
+        target is an explicit boardPath and is saved only by the offline
+        workflow. This command does not write a board open in the editor.
         """
         logger.info("Syncing schematic to board")
         try:
@@ -2446,109 +2602,55 @@ class KiCADInterface:
 
             schematic_path = params.get("schematicPath")
             board_path = params.get("boardPath")
-
-            # Determine board to work with
-            board = None
-            if board_path:
-                board = pcbnew.LoadBoard(board_path)
-            elif self.board:
-                board = self.board
-                board_path = board.GetFileName() if not board_path else board_path
-            else:
+            if not board_path:
                 return {
                     "success": False,
-                    "message": "No board loaded. Use open_project first or provide boardPath.",
+                    "error": "MISSING_PCB_TARGET",
+                    "message": "boardPath is required. This command does not choose a board on its own.",
                 }
-
-            if not board_path:
-                board_path = board.GetFileName()
-
-            # Determine schematic path if not provided
-            if not schematic_path:
-                sch = Path(board_path).with_suffix(".kicad_sch")
-                if sch.exists():
-                    schematic_path = str(sch)
-                else:
-                    project_dir = Path(board_path).parent
-                    sch_files = list(project_dir.glob("*.kicad_sch"))
-                    if sch_files:
-                        schematic_path = str(sch_files[0])
-
+            refusal = self._file_refusal(board_path, "explicit_file")
+            if refusal is not None:
+                return refusal
             if not schematic_path or not Path(schematic_path).exists():
                 return {
                     "success": False,
-                    "message": f"Schematic not found. Provide schematicPath. Tried: {schematic_path}",
+                    "error": "SCHEMATIC_NOT_FOUND",
+                    "message": f"Schematic not found: {schematic_path}",
                 }
 
-            # Generate netlist from schematic
+            internal_netlist = None
             schematic = SchematicManager.load_schematic(schematic_path)
-            if not schematic:
-                return {"success": False, "message": "Failed to load schematic"}
+            if schematic:
+                internal_netlist = ConnectionManager.generate_netlist(
+                    schematic, schematic_path=Path(schematic_path)
+                )
 
-            netlist = ConnectionManager.generate_netlist(
-                schematic, schematic_path=schematic_path
+            from kicad_api.schematic_sync import (
+                SyncFailure,
+                synchronize_schematic_to_pcb,
             )
 
-            # Build (reference, pad_number) -> net_name map
-            pad_net_map = {}  # {(ref, pin_str): net_name}
-            net_names = set()
-            for net_entry in netlist.get("nets", []):
-                net_name = net_entry["name"]
-                net_names.add(net_name)
-                for conn in net_entry.get("connections", []):
-                    ref = conn.get("component", "")
-                    pin = str(conn.get("pin", ""))
-                    if ref and pin and pin != "unknown":
-                        pad_net_map[(ref, pin)] = net_name
+            try:
+                result = synchronize_schematic_to_pcb(
+                    schematic_path, board_path, internal_netlist
+                )
+            except SyncFailure as failure:
+                return {
+                    "success": False,
+                    "error": failure.code,
+                    "message": failure.message,
+                }
+            if not self.use_ipc:
+                import pcbnew
 
-            # Add all nets to board
-            netinfo = board.GetNetInfo()
-            nets_by_name = netinfo.NetsByName()
-            added_nets = []
-            for net_name in net_names:
-                if not nets_by_name.has_key(net_name):
-                    net_item = pcbnew.NETINFO_ITEM(board, net_name)
-                    board.Add(net_item)
-                    added_nets.append(net_name)
-
-            # Refresh nets map after additions
-            netinfo = board.GetNetInfo()
-            nets_by_name = netinfo.NetsByName()
-
-            # Assign nets to pads
-            assigned_pads = 0
-            unmatched = []
-            for fp in board.GetFootprints():
-                ref = fp.GetReference()
-                for pad in fp.Pads():
-                    pad_num = pad.GetNumber()
-                    key = (ref, str(pad_num))
-                    if key in pad_net_map:
-                        net_name = pad_net_map[key]
-                        if nets_by_name.has_key(net_name):
-                            pad.SetNet(nets_by_name[net_name])
-                            assigned_pads += 1
-                    else:
-                        unmatched.append(f"{ref}/{pad_num}")
-
-            board.Save(board_path)
-
-            # If board was loaded fresh, update internal reference
-            if params.get("boardPath"):
-                self.board = board
+                self.board = pcbnew.LoadBoard(board_path)
                 self._update_command_handlers()
-
-            logger.info(
-                f"sync_schematic_to_board: {len(added_nets)} nets added, {assigned_pads} pads assigned"
+                self._remember_offline_board()
+            result["message"] = (
+                f"Synchronised {len(result['footprints'])} footprints "
+                f"({len(result['created'])} added, {len(result['updated'])} updated)."
             )
-            return {
-                "success": True,
-                "message": f"PCB nets synced from schematic: {len(added_nets)} nets added, {assigned_pads} pads assigned",
-                "nets_added": added_nets,
-                "nets_total": len(net_names),
-                "pads_assigned": assigned_pads,
-                "unmatched_pads_sample": unmatched[:10],
-            }
+            return result
 
         except Exception as e:
             logger.error(f"Error in sync_schematic_to_board: {e}")
@@ -2577,6 +2679,10 @@ class KiCADInterface:
                     "success": False,
                     "message": "Missing required parameters: pcbPath, svgPath",
                 }
+
+            refusal = self._file_refusal(pcb_path, "explicit_file")
+            if refusal is not None:
+                return refusal
 
             result = import_svg_to_pcb(
                 pcb_path, svg_path, x, y, width, layer, stroke_width, filled
@@ -2756,13 +2862,17 @@ class KiCADInterface:
                     "errorDetails": "Load or create a board first",
                 }
 
-            # First save the board so the subprocess can load it fresh
+            # First save the board so the subprocess can load it fresh.
+            # This stays on the offline path. A live editor document is refused.
             board_path = self.board.GetFileName()
             if not board_path:
                 return {
                     "success": False,
                     "message": "Board has no file path — save first",
                 }
+            refusal = self._file_refusal(board_path, "explicit_file")
+            if refusal is not None:
+                return refusal
             self.board.Save(board_path)
 
             zone_count = (
@@ -2852,7 +2962,15 @@ print("ok")
             end_x = end.get("x", 0) if isinstance(end, dict) else params.get("endX", 0)
             end_y = end.get("y", 0) if isinstance(end, dict) else params.get("endY", 0)
 
-            success = self.ipc_board_api.add_track(
+            if not isinstance(net, str) or not net.strip():
+                return {
+                    "success": False,
+                    "error": "INVALID_ARGUMENT",
+                    "message": "route_trace requires the name of an existing net.",
+                }
+            net = net.strip()
+
+            result = self.ipc_board_api.add_track(
                 start_x=start_x,
                 start_y=start_y,
                 end_x=end_x,
@@ -2861,25 +2979,63 @@ print("ok")
                 layer=layer,
                 net_name=net,
             )
+            if not isinstance(result, dict):
+                result = {
+                    "success": False,
+                    "error": "IPC_PROTOCOL",
+                    "message": "Track creation did not return a result object.",
+                }
+            if not result.get("success") or result.get("net") != net:
+                result["success"] = False
+                result.setdefault("error", "NET_MISMATCH")
+                result.setdefault(
+                    "message",
+                    f"The track net does not match '{net}'.",
+                )
+                return result
 
             return {
-                "success": success,
-                "message": (
-                    "Added trace (visible in KiCAD UI)"
-                    if success
-                    else "Failed to add trace"
-                ),
+                "success": True,
+                "message": "Added trace (visible in KiCAD UI)",
+                "id": result.get("id", ""),
                 "trace": {
                     "start": {"x": start_x, "y": start_y, "unit": "mm"},
                     "end": {"x": end_x, "y": end_y, "unit": "mm"},
                     "layer": layer,
                     "width": width,
-                    "net": net,
+                    "net": result.get("net", ""),
                 },
             }
         except Exception as e:
             logger.error(f"IPC route_trace error: {e}")
             return {"success": False, "message": str(e)}
+
+    def _refuse_offline_route(self, params):
+        """Pad routing writes an open board only through IPC."""
+        result = ipc_unavailable_result()
+        result["_keep_backend"] = True
+        result["message"] = (
+            "Pad-to-pad routing requires an active KiCad IPC connection. "
+            "The board file was not modified."
+        )
+        return result
+
+    def _ipc_route_pad_to_pad(self, params):
+        """Route one pair of pads on a named net. A failed check creates no track."""
+        refusal = self._require_open_board(params.get("boardPath", ""))
+        if refusal:
+            return refusal
+        request = {
+            "sourceRef": params.get("sourceRef", params.get("fromRef")),
+            "sourcePad": params.get("sourcePad", params.get("fromPad")),
+            "destinationRef": params.get("destinationRef", params.get("toRef")),
+            "destinationPad": params.get("destinationPad", params.get("toPad")),
+            "net": params.get("net"),
+            "width": params.get("width"),
+            "layer": params.get("layer", "F.Cu"),
+            "clearance": params.get("clearance", 0.2),
+        }
+        return self.ipc_board_api.route_pad_to_pad(request)
 
     def _ipc_add_via(self, params):
         """IPC handler for add_via - adds via with real-time UI update"""
@@ -2927,16 +3083,15 @@ print("ok")
             return {"success": False, "message": str(e)}
 
     def _ipc_add_net(self, params):
-        """IPC handler for add_net"""
-        # Note: Net creation via IPC is limited - nets are typically created
-        # when components are placed. Return success for compatibility.
-        name = params.get("name")
-        logger.info(f"IPC add_net: {name} (nets auto-created with components)")
-        return {
-            "success": True,
-            "message": f"Net '{name}' will be created when components are connected",
-            "net": {"name": name},
-        }
+        """IPC handler for add_net. KiCad 10 IPC cannot create a net."""
+        try:
+            name = params.get("name", "")
+            net_class = params.get("netClass", params.get("net_class"))
+            logger.info("IPC add_net requested: %s", name)
+            return self.ipc_board_api.add_net(name, net_class)
+        except Exception as e:
+            logger.error(f"IPC add_net error: {e}")
+            return {"success": False, "message": str(e)}
 
     def _ipc_add_copper_pour(self, params):
         """IPC handler for add_copper_pour - adds zone with real-time UI update"""
@@ -2994,6 +3149,83 @@ print("ok")
         except Exception as e:
             logger.error(f"IPC add_copper_pour error: {e}")
             return {"success": False, "message": str(e)}
+
+    def _phase5_add_wire(self, params):
+        from kicad_api.phase5 import add_wire_result
+
+        return add_wire_result(params)
+
+    def _phase5_add_net_class(self, params):
+        from kicad_api.phase5 import add_net_class_result
+
+        return add_net_class_result(params)
+
+    def _phase5_assign_net_to_class(self, params):
+        from kicad_api.phase5 import assign_net_to_class_result
+
+        return assign_net_to_class_result(params)
+
+    def _phase5_check_clearance(self, params):
+        from kicad_api.phase5 import check_clearance_result
+
+        return check_clearance_result(params)
+
+    def _phase5_replace_component(self, params):
+        from kicad_api.phase5 import replace_component_result
+
+        return replace_component_result(params)
+
+    def _phase5_set_layer_constraints(self, params):
+        from kicad_api.phase5 import set_layer_constraints_result
+
+        return set_layer_constraints_result(params)
+
+    def _phase5_export_netlist(self, params):
+        from kicad_api.pcb_safety import ipc_unavailable_result
+        from kicad_api.phase5 import export_netlist
+
+        paths = self.ipc_board_api._open_pcb_paths() if self.ipc_board_api else []
+        if len(paths) != 1:
+            result = ipc_unavailable_result()
+            result["_keep_backend"] = True
+            result["message"] = "Netlist export needs exactly one open PCB so the matching schematic can be identified."
+            return result
+        return export_netlist(paths[0], params)
+
+    def _phase5_export_vrml(self, params):
+        from kicad_api.pcb_safety import ipc_unavailable_result
+        from kicad_api.phase5 import export_vrml
+
+        paths = self.ipc_board_api._open_pcb_paths() if self.ipc_board_api else []
+        if len(paths) != 1:
+            result = ipc_unavailable_result()
+            result["_keep_backend"] = True
+            result["message"] = "VRML export needs exactly one open PCB."
+            return result
+        return export_vrml(paths[0], params)
+
+    def _ipc_add_zone(self, params):
+        return self.ipc_board_api.create_verified_zone(params)
+
+    def _ipc_add_component_annotation(self, params):
+        return self.ipc_board_api.annotate_component(
+            params.get("reference", ""),
+            params.get("annotation", ""),
+            params.get("visible"),
+        )
+
+    def _ipc_group_components(self, params):
+        return self.ipc_board_api.group_components(
+            params.get("references") or [],
+            params.get("groupName", ""),
+        )
+
+    def _ipc_export_position_file(self, params):
+        from kicad_api.phase5 import export_position_file
+
+        payload = dict(params)
+        payload["_open_paths"] = self.ipc_board_api._open_pcb_paths()
+        return export_position_file(self.ipc_board_api.list_components(), payload)
 
     def _ipc_refill_zones(self, params):
         """IPC handler for refill_zones - refills all zones with real-time UI update"""
@@ -3095,50 +3327,87 @@ print("ok")
             return {"success": False, "message": str(e)}
 
     def _ipc_place_component(self, params):
-        """IPC handler for place_component - places component with real-time UI update"""
+        """IPC handler for place_component - clones an on-board footprint in real time."""
         try:
+            import math
+
             reference = params.get("reference", params.get("componentId", ""))
             footprint = params.get("footprint", "")
-            position = params.get("position", {})
-            x = (
-                position.get("x", 0)
-                if isinstance(position, dict)
-                else params.get("x", 0)
-            )
-            y = (
-                position.get("y", 0)
-                if isinstance(position, dict)
-                else params.get("y", 0)
-            )
+            position = params.get("position")
             rotation = params.get("rotation", 0)
             layer = params.get("layer", "F.Cu")
             value = params.get("value", "")
+            board_path = params.get("boardPath")
 
-            success = self.ipc_board_api.place_component(
-                reference=reference,
-                footprint=footprint,
-                x=x,
-                y=y,
-                rotation=rotation,
+            if not isinstance(reference, str) or not reference.strip():
+                return {"success": False, "message": "reference is required"}
+
+            if not isinstance(footprint, str) or not footprint.strip():
+                return {
+                    "success": False,
+                    "message": "footprint is required in Library:FootprintName format",
+                }
+
+            if not isinstance(position, dict):
+                return {"success": False, "message": "position must be an object"}
+
+            x = position.get("x")
+            y = position.get("y")
+            unit = position.get("unit", "mm")
+
+            if unit not in ("mm", "inch"):
+                return {"success": False, "message": "position.unit must be mm or inch"}
+
+            if (
+                isinstance(x, bool)
+                or isinstance(y, bool)
+                or not isinstance(x, (int, float))
+                or not isinstance(y, (int, float))
+                or not math.isfinite(x)
+                or not math.isfinite(y)
+            ):
+                return {
+                    "success": False,
+                    "message": "position.x and position.y must be finite numbers",
+                }
+
+            if unit == "inch":
+                x *= 25.4
+                y *= 25.4
+
+            if rotation is None:
+                rotation = 0
+            if (
+                isinstance(rotation, bool)
+                or not isinstance(rotation, (int, float))
+                or not math.isfinite(rotation)
+            ):
+                return {"success": False, "message": "rotation must be a finite number"}
+
+            if layer is None:
+                layer = "F.Cu"
+
+            result = self.ipc_board_api.place_component(
+                reference=reference.strip(),
+                footprint=footprint.strip(),
+                x=float(x),
+                y=float(y),
+                rotation=float(rotation),
                 layer=layer,
-                value=value,
+                value=value or "",
+                board_path=board_path,
             )
 
-            return {
-                "success": success,
-                "message": (
-                    f"Placed component {reference} (visible in KiCAD UI)"
-                    if success
-                    else "Failed to place component"
-                ),
-                "component": {
-                    "reference": reference,
-                    "footprint": footprint,
-                    "position": {"x": x, "y": y, "unit": "mm"},
-                    "rotation": rotation,
-                    "layer": layer,
-                },
-            }
+            if isinstance(result, dict):
+                if result.get("success") and "message" not in result:
+                    result["message"] = (
+                        f"Placed component {reference.strip()} (visible in KiCAD UI)"
+                    )
+                elif not result.get("success") and "message" not in result:
+                    result["message"] = result.get("error", "Failed to place component")
+                return result
+
+            return {"success": False, "message": "Place handler returned no result"}
         except Exception as e:
             logger.error(f"IPC place_component error: {e}")
             return {"success": False, "message": str(e)}
@@ -3174,6 +3443,336 @@ print("ok")
             }
         except Exception as e:
             logger.error(f"IPC move_component error: {e}")
+            return {"success": False, "message": str(e)}
+
+    def _refuse_offline_placement(self, params):
+        """Placement edits are live IPC operations. This path does not save a board."""
+        result = ipc_unavailable_result()
+        result["_keep_backend"] = True
+        return result
+
+    def _require_open_board(self, board_path: str):
+        from kicad_api.pcb_safety import paths_refer_to_same_file
+
+        if not board_path:
+            return {
+                "success": False,
+                "error": "MISSING_PCB_TARGET",
+                "message": "boardPath is required.",
+            }
+        try:
+            open_paths = self.ipc_board_api._open_pcb_paths()
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": "EDITOR_STATE_UNKNOWN",
+                "message": f"Could not list the open PCB: {exc}",
+            }
+        if len(open_paths) != 1 or not paths_refer_to_same_file(open_paths[0], board_path):
+            return {
+                "success": False,
+                "error": "BOARD_MISMATCH",
+                "message": (
+                    "The open PCB is "
+                    + (", ".join(open_paths) if open_paths else "none")
+                    + f". Expected {board_path}."
+                ),
+            }
+        return None
+
+    def _ipc_get_footprint_geometry(self, params):
+        refusal = self._require_open_board(params.get("boardPath", ""))
+        if refusal:
+            return refusal
+        return self.ipc_board_api.read_placement_geometry()
+
+    def _ipc_check_placement(self, params):
+        from kicad_api.placement import board_box, validate_placement
+
+        refusal = self._require_open_board(params.get("boardPath", ""))
+        if refusal:
+            return refusal
+        geometry = self.ipc_board_api.read_placement_geometry()
+        outline = self.ipc_board_api.measure_edge_cuts()
+        if not outline.get("present"):
+            return {
+                "success": False,
+                "error": "MISSING_OUTLINE",
+                "message": "The board has no Edge.Cuts outline.",
+                "footprints": geometry.get("footprints", []),
+            }
+        parts = []
+        for item in geometry.get("footprints", []):
+            part = {
+                "reference": item["reference"],
+                "x": item["x"],
+                "y": item["y"],
+                "courtyard": item.get("courtyard"),
+                "nets": item.get("nets", []),
+            }
+            if item.get("body"):
+                part["body"] = item["body"]
+            parts.append(part)
+        width = outline["width"]
+        height = outline["height"]
+        center = outline["center"]
+        board = board_box(width, height, center["x"], center["y"])
+        checked = validate_placement(
+            parts,
+            board,
+            edge_clearance_mm=float(params.get("edgeClearance", 0.5)),
+            courtyard_gap_mm=float(params.get("courtyardGap", 0.25)),
+            max_connected_span_mm=params.get("maxConnectedSpan", 25.0),
+        )
+        checked["outline"] = outline
+        checked["footprints"] = geometry.get("footprints", [])
+        return checked
+
+    def _ipc_apply_placement(self, params):
+        from kicad_api.placement import (
+            PlacementError,
+            board_box,
+            plan_led_switch,
+            placed_parts,
+            validate_placement,
+        )
+
+        refusal = self._require_open_board(params.get("boardPath", ""))
+        if refusal:
+            return refusal
+        strategy = params.get("strategy", "led_switch")
+        if strategy != "led_switch":
+            return {
+                "success": False,
+                "error": "UNSUPPORTED_PLACEMENT",
+                "message": f"Placement strategy '{strategy}' is not implemented.",
+            }
+        width = float(params.get("width", 50.0))
+        height = float(params.get("height", 40.0))
+        # 1.5 mm keeps connector reference text, which sits outside the courtyard, on the board.
+        edge = float(params.get("edgeClearance", 1.5))
+        gap = float(params.get("courtyardGap", 1.0))
+        geometry = self.ipc_board_api.read_placement_geometry()
+        local = {}
+        nets = {}
+        bodies = {}
+        before_pads = {}
+        for item in geometry.get("footprints", []):
+            if "localCourtyard" not in item:
+                return {
+                    "success": False,
+                    "error": "MISSING_COURTYARD",
+                    "message": f"{item.get('reference', '')} has no courtyard.",
+                }
+            local[item["reference"]] = item["localCourtyard"]
+            nets[item["reference"]] = item.get("nets", [])
+            if item.get("localBody"):
+                bodies[item["reference"]] = item["localBody"]
+            for pad in item.get("pads", []):
+                before_pads[(item["reference"], pad["number"])] = pad["net"]
+        try:
+            plan = plan_led_switch(local, width, height, edge, gap)
+        except PlacementError as failure:
+            return {"success": False, "error": failure.code, "message": failure.message}
+        preview = placed_parts(local, plan["placements"], nets, bodies or None)
+        planned = validate_placement(
+            preview,
+            board_box(width, height),
+            edge_clearance_mm=edge,
+            courtyard_gap_mm=gap,
+            max_connected_span_mm=25.0,
+        )
+        if not planned["success"]:
+            return {
+                "success": False,
+                "error": "PLACEMENT_REJECTED",
+                "message": "The planned positions fail the placement checks.",
+                "problems": planned["problems"],
+                "plan": plan,
+            }
+        outline_result = None
+        if params.get("includeOutline", True):
+            existing = self.ipc_board_api.measure_edge_cuts()
+            expected = board_box(width, height)
+            if existing.get("present"):
+                box = existing["box"]
+                same = all(
+                    abs(box[key] - expected[key]) <= 0.05 for key in ("xmin", "ymin", "xmax", "ymax")
+                )
+                if not same:
+                    return {
+                        "success": False,
+                        "error": "OUTLINE_CONFLICT",
+                        "message": "An Edge.Cuts outline is already present and it is not the requested rectangle.",
+                        "outline": existing,
+                    }
+            else:
+                outline_result = self.ipc_board_api.add_board_outline(
+                    {
+                        "shape": "rectangle",
+                        "x": expected["xmin"],
+                        "y": expected["ymin"],
+                        "width": width,
+                        "height": height,
+                        "unit": "mm",
+                    }
+                )
+                if not outline_result.get("success"):
+                    return outline_result
+                measured = self.ipc_board_api.measure_edge_cuts()
+                if (
+                    not measured.get("present")
+                    or abs(measured["width"] - width) > 0.05
+                    or abs(measured["height"] - height) > 0.05
+                    or abs(measured["center"]["x"]) > 0.05
+                    or abs(measured["center"]["y"]) > 0.05
+                ):
+                    return {
+                        "success": False,
+                        "error": "IPC_VERIFY_FAILED",
+                        "message": "The outline was not the requested rectangle after read-back.",
+                        "outline": measured,
+                    }
+                outline_result["measured"] = measured
+        placements = [
+            {"reference": reference, **place}
+            for reference, place in plan["placements"].items()
+        ]
+        moved = self.ipc_board_api.place_components(placements)
+        if not moved.get("success"):
+            moved["plan"] = plan
+            return moved
+        checked = self._ipc_check_placement(
+            {
+                "boardPath": params.get("boardPath"),
+                "edgeClearance": edge,
+                "courtyardGap": gap,
+                "maxConnectedSpan": 25.0,
+            }
+        )
+        after = self.ipc_board_api.read_placement_geometry()
+        after_pads = {}
+        for item in after.get("footprints", []):
+            for pad in item.get("pads", []):
+                after_pads[(item["reference"], pad["number"])] = pad["net"]
+        if after_pads != before_pads:
+            return {
+                "success": False,
+                "error": "NET_CHANGED",
+                "message": "Pad nets changed. The placement was not left in that state if restore succeeded.",
+                "plan": plan,
+            }
+        return {
+            "success": bool(checked.get("success")),
+            "message": "Placement applied." if checked.get("success") else "Placement read-back failed its checks.",
+            "optimised": False,
+            "strategy": plan["strategy"],
+            "plan": plan,
+            "outline": outline_result,
+            "check": checked,
+            "readBack": moved.get("readBack"),
+        }
+
+    def _ipc_clone_component(self, params):
+        """Clone an existing PCB footprint using real-time IPC."""
+        try:
+            import math
+
+            source_reference = params.get("sourceReference")
+            new_reference = params.get("newReference")
+            position = params.get("position")
+            rotation = params.get("rotation")
+            value = params.get("value")
+            copy_nets = params.get("copyNets", False)
+
+            if not isinstance(source_reference, str) or not source_reference.strip():
+                return {
+                    "success": False,
+                    "message": "sourceReference is required",
+                }
+
+            if not isinstance(new_reference, str) or not new_reference.strip():
+                return {
+                    "success": False,
+                    "message": "newReference is required",
+                }
+
+            if not isinstance(position, dict):
+                return {
+                    "success": False,
+                    "message": "position must be an object",
+                }
+
+            x = position.get("x")
+            y = position.get("y")
+            unit = position.get("unit", "mm")
+
+            if unit not in ("mm", "inch"):
+                return {
+                    "success": False,
+                    "message": "position.unit must be mm or inch",
+                }
+
+            if (
+                isinstance(x, bool)
+                or isinstance(y, bool)
+                or not isinstance(x, (int, float))
+                or not isinstance(y, (int, float))
+                or not math.isfinite(x)
+                or not math.isfinite(y)
+            ):
+                return {
+                    "success": False,
+                    "message": "position.x and position.y must be finite numbers",
+                }
+
+            if unit == "inch":
+                x *= 25.4
+                y *= 25.4
+
+            if rotation is not None and (
+                isinstance(rotation, bool)
+                or not isinstance(rotation, (int, float))
+                or not math.isfinite(rotation)
+            ):
+                return {
+                    "success": False,
+                    "message": "rotation must be a finite number",
+                }
+
+            if not isinstance(copy_nets, bool):
+                return {
+                    "success": False,
+                    "message": "copyNets must be a boolean",
+                }
+
+            # Same board API used by _ipc_move_component.
+            result = self.ipc_board_api.clone_component(
+                source_reference=source_reference.strip(),
+                new_reference=new_reference.strip(),
+                x=float(x),
+                y=float(y),
+                rotation=None if rotation is None else float(rotation),
+                value=value,
+                copy_nets=copy_nets,
+            )
+
+            if isinstance(result, dict):
+                if result.get("success") and "message" not in result:
+                    result["message"] = (
+                        f"Cloned {source_reference.strip()} as {new_reference.strip()} "
+                        "(visible in KiCAD UI)"
+                    )
+                elif not result.get("success") and "message" not in result:
+                    result["message"] = result.get("error", "Failed to clone component")
+                return result
+
+            return {
+                "success": False,
+                "message": "Clone handler returned no result",
+            }
+        except Exception as e:
+            logger.error(f"IPC clone_component error: {e}")
             return {"success": False, "message": str(e)}
 
     def _ipc_delete_component(self, params):
@@ -3219,13 +3818,8 @@ print("ok")
             return {"success": False, "message": str(e)}
 
     def _ipc_delete_trace(self, params):
-        """IPC handler for delete_trace - Note: IPC doesn't support direct trace deletion yet"""
-        # IPC API doesn't have a direct delete track method
-        # Fall back to SWIG for this operation
-        logger.info(
-            "delete_trace: Falling back to SWIG (IPC doesn't support trace deletion)"
-        )
-        return self.routing_commands.delete_trace(params)
+        """Delete traces through IPC. This handler does not call the SWIG board."""
+        return self.ipc_board_api.delete_traces(params)
 
     def _ipc_get_nets_list(self, params):
         """IPC handler for get_nets_list - gets nets with real-time data"""
@@ -3238,69 +3832,8 @@ print("ok")
             return {"success": False, "message": str(e)}
 
     def _ipc_add_board_outline(self, params):
-        """IPC handler for add_board_outline - adds board edge with real-time UI update.
-        Rounded rectangles are delegated to the SWIG path because the IPC BoardSegment
-        type cannot represent arcs; the SWIG path writes directly to the .kicad_pcb file
-        and correctly generates PCB_SHAPE arcs for rounded corners.
-        """
-        shape = params.get("shape", "rectangle")
-        if shape in ("rounded_rectangle", "rectangle"):
-            # IPC path only supports straight segments from a points list,
-            # but Claude sends rectangle/rounded_rectangle as shape+width+height.
-            # Fall back to the SWIG path which correctly handles both shapes.
-            logger.info(f"_ipc_add_board_outline: delegating {shape} to SWIG path")
-            return self.board_commands.add_board_outline(params)
-
-        try:
-            from kipy.board_types import BoardSegment
-            from kipy.geometry import Vector2
-            from kipy.util.units import from_mm
-            from kipy.proto.board.board_types_pb2 import BoardLayer
-
-            board = self.ipc_board_api._get_board()
-
-            # Unwrap nested params (Claude sends {"shape":..., "params":{...}})
-            inner = params.get("params", params)
-            points = inner.get("points", params.get("points", []))
-            width = inner.get("width", params.get("width", 0.1))
-
-            if len(points) < 2:
-                return {
-                    "success": False,
-                    "message": "At least 2 points required for board outline",
-                }
-
-            commit = board.begin_commit()
-            lines_created = 0
-
-            # Create line segments connecting the points
-            for i in range(len(points)):
-                start = points[i]
-                end = points[(i + 1) % len(points)]  # Wrap around to close the outline
-
-                segment = BoardSegment()
-                segment.start = Vector2.from_xy(
-                    from_mm(start.get("x", 0)), from_mm(start.get("y", 0))
-                )
-                segment.end = Vector2.from_xy(
-                    from_mm(end.get("x", 0)), from_mm(end.get("y", 0))
-                )
-                segment.layer = BoardLayer.BL_Edge_Cuts
-                segment.attributes.stroke.width = from_mm(width)
-
-                board.create_items(segment)
-                lines_created += 1
-
-            board.push_commit(commit, "Added board outline")
-
-            return {
-                "success": True,
-                "message": f"Added board outline with {lines_created} segments (visible in KiCAD UI)",
-                "segments": lines_created,
-            }
-        except Exception as e:
-            logger.error(f"IPC add_board_outline error: {e}")
-            return {"success": False, "message": str(e)}
+        """Add an outline through IPC. Rectangles are not delegated to SWIG."""
+        return self.ipc_board_api.add_board_outline(params)
 
     def _ipc_add_mounting_hole(self, params):
         """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
@@ -3348,12 +3881,33 @@ print("ok")
             return {"success": False, "message": str(e)}
 
     def _ipc_rotate_component(self, params):
-        """IPC handler for rotate_component - rotates component with real-time UI update"""
+        """Set a component's absolute rotation and read it back."""
         try:
             reference = params.get("reference", params.get("componentId", ""))
-            angle = params.get("angle", params.get("rotation", 90))
+            if "angle" in params:
+                angle = params.get("angle")
+            elif "rotation" in params:
+                angle = params.get("rotation")
+            else:
+                return {
+                    "success": False,
+                    "error": "INVALID_ARGUMENT",
+                    "message": "angle is required and is an absolute rotation in degrees.",
+                }
+            if isinstance(angle, bool) or not isinstance(angle, (int, float)):
+                return {
+                    "success": False,
+                    "error": "INVALID_ARGUMENT",
+                    "message": "angle must be a number of degrees.",
+                }
+            if angle != angle or angle in (float("inf"), float("-inf")):
+                return {
+                    "success": False,
+                    "error": "INVALID_ARGUMENT",
+                    "message": "angle must be a finite number of degrees.",
+                }
+            target_angle = float(angle) % 360.0
 
-            # Get current component to find its position
             components = self.ipc_board_api.list_components()
             target = None
             for comp in components:
@@ -3364,26 +3918,64 @@ print("ok")
             if not target:
                 return {"success": False, "message": f"Component {reference} not found"}
 
-            # Calculate new rotation
-            current_rotation = target.get("rotation", 0)
-            new_rotation = (current_rotation + angle) % 360
-
-            # Use move_component with new rotation (position stays the same)
-            success = self.ipc_board_api.move_component(
+            position = target.get("position") or {}
+            previous = target.get("rotation", 0)
+            moved = self.ipc_board_api.move_component(
                 reference=reference,
-                x=target.get("position", {}).get("x", 0),
-                y=target.get("position", {}).get("y", 0),
-                rotation=new_rotation,
+                x=position.get("x", 0),
+                y=position.get("y", 0),
+                rotation=target_angle,
             )
 
+            after = None
+            for comp in self.ipc_board_api.list_components():
+                if comp.get("reference") == reference:
+                    after = comp
+                    break
+
+            actual = None if after is None else after.get("rotation")
+            same_part = (
+                after is not None
+                and after.get("id") == target.get("id")
+                and after.get("footprint") == target.get("footprint")
+            )
+
+            def close_enough(value):
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    return False
+                delta = (float(value) - target_angle) % 360.0
+                if delta > 180.0:
+                    delta = 360.0 - delta
+                return delta <= 0.05
+
+            if not moved or not same_part or not close_enough(actual):
+                if moved and after is not None and not close_enough(actual):
+                    self.ipc_board_api.move_component(
+                        reference=reference,
+                        x=position.get("x", 0),
+                        y=position.get("y", 0),
+                        rotation=previous,
+                    )
+                return {
+                    "success": False,
+                    "error": "ROTATION_MISMATCH" if moved else "IPC_ERROR",
+                    "message": (
+                        f"Component {reference} is not at {target_angle:g} degrees "
+                        "after the IPC transaction."
+                    ),
+                    "reference": reference,
+                    "requestedRotation": target_angle,
+                    "actualRotation": actual,
+                }
+
             return {
-                "success": success,
-                "message": (
-                    f"Rotated component {reference} by {angle}° (visible in KiCAD UI)"
-                    if success
-                    else "Failed to rotate component"
-                ),
-                "newRotation": new_rotation,
+                "success": True,
+                "message": f"Rotated component {reference} to {target_angle:g}°",
+                "reference": reference,
+                "id": after.get("id"),
+                "footprint": after.get("footprint"),
+                "newRotation": actual,
+                "requestedRotation": target_angle,
             }
         except Exception as e:
             logger.error(f"IPC rotate_component error: {e}")
@@ -3436,7 +4028,7 @@ print("ok")
             return {"success": False, "message": "IPC backend not available"}
 
         try:
-            success = self.ipc_board_api.add_track(
+            result = self.ipc_board_api.add_track(
                 start_x=params.get("startX", 0),
                 start_y=params.get("startY", 0),
                 end_x=params.get("endX", 0),
@@ -3445,14 +4037,23 @@ print("ok")
                 layer=params.get("layer", "F.Cu"),
                 net_name=params.get("net"),
             )
+            if not isinstance(result, dict):
+                result = {
+                    "success": False,
+                    "message": "Track creation did not return a result object.",
+                }
+            accepted = bool(result.get("success"))
+            requested = params.get("net")
+            if accepted and isinstance(requested, str) and requested.strip():
+                accepted = result.get("net") == requested.strip()
             return {
-                "success": success,
-                "message": (
-                    "Track added (visible in KiCAD UI)"
-                    if success
-                    else "Failed to add track"
-                ),
-                "realtime": True,
+                "success": accepted,
+                "message": result.get("message")
+                or ("Track added (visible in KiCAD UI)" if accepted else "Failed to add track"),
+                "id": result.get("id", ""),
+                "net": result.get("net", ""),
+                "error": result.get("error"),
+                "realtime": accepted,
             }
         except Exception as e:
             logger.error(f"Error adding track via IPC: {e}")

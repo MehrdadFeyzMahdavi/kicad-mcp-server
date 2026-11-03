@@ -278,18 +278,23 @@ class ConnectionManager:
                 pin_angle_deg = 0
             import math as _math
             angle_rad = _math.radians(pin_angle_deg)
-            stub_end = [round(pin_loc[0] + 2.54 * _math.cos(angle_rad), 4),
-                        round(pin_loc[1] - 2.54 * _math.sin(angle_rad), 4)]
+            stub_end = [round(pin_loc[0] + 2.54 * _math.cos(angle_rad), 6),
+                        round(pin_loc[1] - 2.54 * _math.sin(angle_rad), 6)]
+            if abs(stub_end[0] - pin_loc[0]) < 1e-6 and abs(stub_end[1] - pin_loc[1]) < 1e-6:
+                logger.error(f"Wire stub for {component_ref}/{pin_name} has zero length")
+                return False
 
-            # Create wire stub using WireManager
-            wire_success = WireManager.add_wire(schematic_path, pin_loc, stub_end)
+            # The pin end is the electrical connection and must not be grid-snapped
+            # away from the pin. The label sits on the other end of the same wire.
+            wire_success = WireManager.add_wire(
+                schematic_path, pin_loc, stub_end, snap=False
+            )
             if not wire_success:
                 logger.error(f"Failed to create wire stub for net connection")
                 return False
 
-            # Add label at the end of the stub using WireManager
             label_success = WireManager.add_label(
-                schematic_path, net_name, stub_end, label_type="label"
+                schematic_path, net_name, stub_end, label_type="label", snap=False
             )
             if not label_success:
                 logger.error(f"Failed to add net label '{net_name}'")

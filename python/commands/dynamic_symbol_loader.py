@@ -9,12 +9,13 @@ This enables access to all ~10,000+ KiCad symbols dynamically.
 
 import os
 import re
+import sys
 import uuid
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from commands.grid_utils import snap_to_grid
+from commands.grid_utils import find_balanced_end, snap_to_grid
 
 logger = logging.getLogger("kicad_interface")
 
@@ -36,21 +37,67 @@ class DynamicSymbolLoader:
         self.project_path = project_path  # Project directory for project-specific libraries
 
     def find_kicad_symbol_libraries(self) -> List[Path]:
-        """Find all KiCad symbol library directories"""
-        possible_paths = [
-            Path("/usr/share/kicad/symbols"),
-            Path("/usr/local/share/kicad/symbols"),
-            Path("C:/Program Files/KiCad/9.0/share/kicad/symbols"),
-            Path("C:/Program Files/KiCad/8.0/share/kicad/symbols"),
-            Path("/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols"),
-            Path.home() / ".local" / "share" / "kicad" / "9.0" / "symbols",
-            Path.home() / "Documents" / "KiCad" / "9.0" / "3rdparty" / "symbols",
-        ]
-        for env_var in ["KICAD9_SYMBOL_DIR", "KICAD8_SYMBOL_DIR", "KICAD_SYMBOL_DIR"]:
-            if env_var in os.environ:
-                possible_paths.insert(0, Path(os.environ[env_var]))
+        """Find KiCad symbol library directories, newest installation first."""
+        possible_paths: List[Path] = []
+        for env_var in (
+            "KICAD_SYMBOL_DIR",
+            "KICAD10_SYMBOL_DIR",
+            "KICAD9_SYMBOL_DIR",
+            "KICAD8_SYMBOL_DIR",
+            "KICAD7_SYMBOL_DIR",
+        ):
+            value = os.environ.get(env_var)
+            if value:
+                possible_paths.append(Path(value))
 
-        return [p for p in possible_paths if p.exists() and p.is_dir()]
+        executable_symbols = (
+            Path(sys.executable).resolve().parent.parent / "share" / "kicad" / "symbols"
+        )
+        possible_paths.append(executable_symbols)
+
+        program_roots = [
+            os.environ.get("ProgramFiles", r"C:\Program Files"),
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        ]
+        for root in program_roots:
+            kicad_root = Path(root) / "KiCad"
+            if not kicad_root.is_dir():
+                continue
+            versions = sorted(
+                (child for child in kicad_root.iterdir() if child.is_dir()),
+                key=lambda child: child.name,
+                reverse=True,
+            )
+            for version_dir in versions:
+                possible_paths.append(version_dir / "share" / "kicad" / "symbols")
+
+        possible_paths.extend(
+            [
+                Path("C:/Program Files/KiCad/10.0/share/kicad/symbols"),
+                Path("C:/Program Files/KiCad/9.0/share/kicad/symbols"),
+                Path("C:/Program Files/KiCad/8.0/share/kicad/symbols"),
+                Path("/usr/share/kicad/symbols"),
+                Path("/usr/local/share/kicad/symbols"),
+                Path("/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols"),
+                Path.home() / ".local" / "share" / "kicad" / "10.0" / "symbols",
+                Path.home() / ".local" / "share" / "kicad" / "9.0" / "symbols",
+                Path.home() / "Documents" / "KiCad" / "10.0" / "3rdparty" / "symbols",
+                Path.home() / "Documents" / "KiCad" / "9.0" / "3rdparty" / "symbols",
+            ]
+        )
+
+        found: List[Path] = []
+        seen = set()
+        for path in possible_paths:
+            try:
+                key = str(path.resolve()).lower()
+            except OSError:
+                key = str(path).lower()
+            if key in seen or not path.is_dir():
+                continue
+            seen.add(key)
+            found.append(path)
+        return found
 
     def find_library_file(self, library_name: str) -> Optional[Path]:
         """Find the .kicad_sym file for a given library name.
@@ -99,6 +146,11 @@ class DynamicSymbolLoader:
     def _resolve_sym_uri(self, uri: str) -> Optional[str]:
         """Resolve environment variables in a sym-lib-table URI."""
         env_map = {
+            "KICAD10_SYMBOL_DIR": [
+                "C:/Program Files/KiCad/10.0/share/kicad/symbols",
+                "/usr/share/kicad/symbols",
+                "/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols",
+            ],
             "KICAD9_SYMBOL_DIR": [
                 "C:/Program Files/KiCad/9.0/share/kicad/symbols",
                 "/usr/share/kicad/symbols",
@@ -107,6 +159,7 @@ class DynamicSymbolLoader:
             "KICAD8_SYMBOL_DIR": [
                 "C:/Program Files/KiCad/8.0/share/kicad/symbols",
             ],
+            "KICAD_SYMBOL_DIR": [],
             "KIPRJMOD": [str(self.project_path)] if self.project_path else [],
         }
         result = uri
@@ -158,6 +211,32 @@ class DynamicSymbolLoader:
             return None
 
         return "\n".join(lines[start : end + 1])
+
+    @staticmethod
+    def _same_symbol_text(existing: str, library_block: str) -> bool:
+        """True when two symbol texts differ only by whitespace or indentation."""
+        def normalize(text: str) -> str:
+            return re.sub(r"\s+", " ", text).strip()
+
+        return normalize(existing) == normalize(library_block)
+
+    @staticmethod
+    def _embedded_symbol_span(content: str, full_name: str) -> Optional[Tuple[int, int]]:
+        """Return the span of a top-level embedded lib_symbol, if present."""
+        lib_start = content.find("(lib_symbols")
+        if lib_start < 0:
+            return None
+        lib_end = find_balanced_end(content, lib_start)
+        if lib_end is None:
+            return None
+        needle = f'(symbol "{full_name}"'
+        index = content.find(needle, lib_start, lib_end)
+        if index < 0:
+            return None
+        end = find_balanced_end(content, index)
+        if end is None:
+            return None
+        return index, end
 
     def _iter_top_level_items(self, symbol_block: str) -> list:
         """
@@ -349,46 +428,45 @@ class DynamicSymbolLoader:
         with open(schematic_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        # Check if symbol already exists
-        if f'(symbol "{full_name}"' in content:
-            logger.info(f"Symbol {full_name} already exists in schematic")
-            return True
-
-        # Extract symbol from library
+        # Extract symbol from library. A missing symbol is an error, not a
+        # substitution with a different part.
         symbol_block = self.extract_symbol_from_library(library_name, symbol_name)
         if not symbol_block:
             raise ValueError(
                 f"Symbol '{symbol_name}' not found in library '{library_name}'"
             )
 
-        # Indent the block to match lib_symbols indentation (4 spaces for top-level)
         indented_lines = []
         for line in symbol_block.split("\n"):
-            # Add 4-space indent for the content inside lib_symbols
             indented_lines.append("    " + line if line.strip() else line)
         indented_block = "\n".join(indented_lines)
 
-        # Find the end of lib_symbols section using string search (format-independent,
-        # works even when sexpdata.dumps() has compacted the file to a single line)
-        lib_sym_start = content.find("(lib_symbols")
-        if lib_sym_start == -1:
-            raise ValueError("No lib_symbols section found in schematic")
-
-        depth = 0
-        lib_sym_end = lib_sym_start
-        for i in range(lib_sym_start, len(content)):
-            if content[i] == "(":
-                depth += 1
-            elif content[i] == ")":
-                depth -= 1
-                if depth == 0:
-                    lib_sym_end = i
-                    break
+        existing = self._embedded_symbol_span(content, full_name)
+        if existing is not None:
+            start, end = existing
+            current = content[start:end]
+            if self._same_symbol_text(current, symbol_block):
+                logger.info(f"Symbol {full_name} already matches the installed library")
+                return True
+            logger.info(
+                f"Replacing embedded {full_name} with the installed library definition"
+            )
+            content = content[:start] + indented_block.strip("\n") + content[end:]
         else:
-            raise ValueError("No lib_symbols section found in schematic")
-
-        # Insert the symbol block just before the closing ) of lib_symbols
-        content = content[:lib_sym_end] + "\n    " + indented_block + "\n  " + content[lib_sym_end:]
+            lib_sym_start = content.find("(lib_symbols")
+            if lib_sym_start == -1:
+                raise ValueError("No lib_symbols section found in schematic")
+            lib_sym_end = find_balanced_end(content, lib_sym_start)
+            if lib_sym_end is None:
+                raise ValueError("No lib_symbols section found in schematic")
+            # find_balanced_end returns one past the closing parenthesis.
+            content = (
+                content[: lib_sym_end - 1]
+                + "\n    "
+                + indented_block
+                + "\n  "
+                + content[lib_sym_end - 1 :]
+            )
 
         with open(schematic_path, "w", encoding="utf-8") as f:
             f.write(content)
@@ -412,6 +490,9 @@ class DynamicSymbolLoader:
         footprint: str = "",
         x: float = 0,
         y: float = 0,
+        rotation: float = 0,
+        mirror: Optional[str] = None,
+        unit: int = 1,
     ) -> bool:
         """
         Add a component instance to the schematic.
@@ -419,8 +500,19 @@ class DynamicSymbolLoader:
         """
         full_lib_id = f"{library_name}:{symbol_name}"
         new_uuid = str(uuid.uuid4())
+        rotation_value = float(rotation or 0)
+        rotation_text = (
+            str(int(rotation_value))
+            if rotation_value == int(rotation_value)
+            else str(rotation_value)
+        )
+        mirror_text = ""
+        if mirror in ("x", "y"):
+            mirror_text = f" (mirror {mirror})"
+        elif mirror:
+            raise ValueError("mirror must be 'x', 'y', or omitted")
 
-        instance_block = f"""  (symbol (lib_id "{full_lib_id}") (at {x} {y} 0) (unit 1)
+        instance_block = f"""  (symbol (lib_id "{full_lib_id}") (at {x} {y} {rotation_text}){mirror_text} (unit {int(unit)})
     (in_bom yes) (on_board yes) (dnp no)
     (uuid "{new_uuid}")
     (property "Reference" "{reference}" (at {x} {y - 2.54} 0)
@@ -497,6 +589,9 @@ class DynamicSymbolLoader:
         footprint: str = "",
         x: float = 0,
         y: float = 0,
+        rotation: float = 0,
+        mirror: Optional[str] = None,
+        unit: int = 1,
         project_path: Optional[Path] = None,
     ) -> bool:
         """
@@ -526,6 +621,9 @@ class DynamicSymbolLoader:
             footprint=footprint,
             x=x,
             y=y,
+            rotation=rotation,
+            mirror=mirror,
+            unit=unit,
         )
 
 

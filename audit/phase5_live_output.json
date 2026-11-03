@@ -1,0 +1,408 @@
+{
+  "steps": [
+    {
+      "name": "baseline",
+      "result": {
+        "openPaths": [
+          "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_pcb"
+        ],
+        "counts": {
+          "footprints": 73,
+          "zones": 26,
+          "groups": 0,
+          "tracks": 545,
+          "nets": 50
+        },
+        "net": "+5V_ISO",
+        "rPlace": {
+          "reference": "R_PLACE",
+          "id": "9e910bf0-f26e-4922-aff9-97b23a798d21",
+          "description": "",
+          "visible": false,
+          "x": 230.0,
+          "y": 170.0,
+          "rotation": 0.0,
+          "footprint": "Resistors SMD:RESC2012X60N"
+        },
+        "files": {
+          "phase3": {
+            "path": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_pcb",
+            "size": 1756093,
+            "mtime": 1793522643.266505,
+            "sha256": "383e481737b4c048c9f87335b48ff0fdb381fb47a816262da09930f7ca3d4996"
+          },
+          "original": {
+            "path": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-move-test.kicad_pcb",
+            "size": 1756123,
+            "mtime": 1793520690.2737627,
+            "sha256": "04514a3e851369cee2364171711f0496c63ad3a89a1507cecd9fdbbc1146bbd8"
+          }
+        }
+      }
+    },
+    {
+      "name": "unsupported",
+      "result": {
+        "responses": {
+          "add_wire": {
+            "success": false,
+            "error": "UNSUPPORTED_OPERATION",
+            "message": "add_wire is not an alias of add_schematic_wire. add_wire takes start and end points and no schematic path. add_schematic_wire edits a schematic file named by schematicPath, using startPoint and endPoint. No schematic was edited.",
+            "_backend": "unavailable",
+            "_realtime": false
+          },
+          "add_net_class": {
+            "success": false,
+            "error": "UNSUPPORTED_OPERATION",
+            "message": "add_net_class is not an alias of create_netclass. The registered tool requires clearance, trackWidth, viaDiameter, and viaDrill, and can also carry a description, microvia sizes, differential-pair rules, and a net list. create_netclass writes those rules through the SWIG board object. KiCad 10 IPC can read a net's class and cannot create one. No net class was created.",
+            "_backend": "unavailable",
+            "_realtime": false
+          },
+          "assign_net_to_class": {
+            "success": false,
+            "error": "UNSUPPORTED_OPERATION",
+            "message": "KiCad 10 IPC can read the class of a net and cannot assign a net to a class. The SWIG net-class editor is not used on an open PCB. No assignment was made.",
+            "_backend": "unavailable",
+            "_realtime": false
+          },
+          "check_clearance": {
+            "success": false,
+            "error": "UNSUPPORTED_OPERATION",
+            "message": "KiCad 10 IPC has no pairwise clearance query. A distance estimate would not be the design-rule result, so no pass or fail is reported.",
+            "_backend": "unavailable",
+            "_realtime": false
+          },
+          "replace_component": {
+            "success": false,
+            "error": "UNSUPPORTED_OPERATION",
+            "message": "KiCad 10 IPC cannot change the library definition of an existing footprint in place. Deleting it and placing another would change its id and pad nets. No component was replaced.",
+            "_backend": "unavailable",
+            "_realtime": false
+          },
+          "set_layer_constraints": {
+            "success": false,
+            "error": "UNSUPPORTED_OPERATION",
+            "message": "KiCad 10 IPC has no per-layer minimum track, clearance, or via constraint command. Board stackup updates are a different operation. No constraint was changed.",
+            "_backend": "unavailable",
+            "_realtime": false
+          }
+        },
+        "counts": {
+          "footprints": 73,
+          "zones": 26,
+          "groups": 0,
+          "tracks": 545,
+          "nets": 50
+        }
+      }
+    },
+    {
+      "name": "zone_missing_net",
+      "result": {
+        "response": {
+          "success": false,
+          "error": "NET_NOT_FOUND",
+          "message": "Net 'PHASE5_MISSING_NET' does not exist, so no zone was created.",
+          "_backend": "ipc",
+          "_realtime": false
+        },
+        "counts": {
+          "footprints": 73,
+          "zones": 26,
+          "groups": 0,
+          "tracks": 545,
+          "nets": 50
+        }
+      }
+    },
+    {
+      "name": "add_zone",
+      "result": {
+        "response": {
+          "success": true,
+          "id": "cfe9613c-e101-4c0e-bdd3-c200a20208ff",
+          "net": "+5V_ISO",
+          "layer": "F.Cu",
+          "pointCount": 4,
+          "padConnection": "thermal",
+          "clearance": 0.2,
+          "message": "Added zone cfe9613c-e101-4c0e-bdd3-c200a20208ff on net '+5V_ISO'.",
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "zoneCount": 27
+      }
+    },
+    {
+      "name": "zone_undo",
+      "result": {
+        "undo": "1",
+        "present": false,
+        "zoneCount": 26
+      }
+    },
+    {
+      "name": "clone_R_P5A",
+      "result": {
+        "response": {
+          "success": true,
+          "reference": "R_P5A",
+          "source_reference": "R_PLACE",
+          "footprint": "Resistors SMD:RESC2012X60N",
+          "pads": 2,
+          "uuid": "3072b1c5-48af-426b-97af-becc4aeabe55",
+          "position": {
+            "x": 470.0,
+            "y": 450.0,
+            "unit": "mm"
+          },
+          "rotation": 0.0,
+          "nets_copied": false,
+          "message": "Cloned R_PLACE as R_P5A (visible in KiCAD UI)",
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "state": {
+          "reference": "R_P5A",
+          "id": "3072b1c5-48af-426b-97af-becc4aeabe55",
+          "description": "",
+          "visible": false,
+          "x": 470.0,
+          "y": 450.0,
+          "rotation": 0.0,
+          "footprint": "Resistors SMD:RESC2012X60N"
+        }
+      }
+    },
+    {
+      "name": "clone_R_P5B",
+      "result": {
+        "response": {
+          "success": true,
+          "reference": "R_P5B",
+          "source_reference": "R_PLACE",
+          "footprint": "Resistors SMD:RESC2012X60N",
+          "pads": 2,
+          "uuid": "738b7ddb-e616-4cf6-8bc2-c6a4fe821697",
+          "position": {
+            "x": 490.0,
+            "y": 450.0,
+            "unit": "mm"
+          },
+          "rotation": 0.0,
+          "nets_copied": false,
+          "message": "Cloned R_PLACE as R_P5B (visible in KiCAD UI)",
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "state": {
+          "reference": "R_P5B",
+          "id": "738b7ddb-e616-4cf6-8bc2-c6a4fe821697",
+          "description": "",
+          "visible": false,
+          "x": 490.0,
+          "y": 450.0,
+          "rotation": 0.0,
+          "footprint": "Resistors SMD:RESC2012X60N"
+        }
+      }
+    },
+    {
+      "name": "annotate",
+      "result": {
+        "response": {
+          "success": true,
+          "reference": "R_P5A",
+          "id": "3072b1c5-48af-426b-97af-becc4aeabe55",
+          "annotation": "PHASE5 NOTE",
+          "description": "PHASE5 NOTE",
+          "visible": true,
+          "message": "Annotated R_P5A.",
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "before": {
+          "reference": "R_P5A",
+          "id": "3072b1c5-48af-426b-97af-becc4aeabe55",
+          "description": "",
+          "visible": false,
+          "x": 470.0,
+          "y": 450.0,
+          "rotation": 0.0,
+          "footprint": "Resistors SMD:RESC2012X60N"
+        },
+        "after": {
+          "reference": "R_P5A",
+          "id": "3072b1c5-48af-426b-97af-becc4aeabe55",
+          "description": "PHASE5 NOTE",
+          "visible": true,
+          "x": 470.0,
+          "y": 450.0,
+          "rotation": 0.0,
+          "footprint": "Resistors SMD:RESC2012X60N"
+        }
+      }
+    },
+    {
+      "name": "annotation_undo",
+      "result": {
+        "undo": "1",
+        "description": ""
+      }
+    },
+    {
+      "name": "group",
+      "result": {
+        "response": {
+          "success": true,
+          "id": "56370812-d864-4f70-8eeb-cf46ad1c57b5",
+          "groupName": "PHASE5_GROUP",
+          "references": [
+            "R_P5A",
+            "R_P5B"
+          ],
+          "memberIds": [
+            "3072b1c5-48af-426b-97af-becc4aeabe55",
+            "738b7ddb-e616-4cf6-8bc2-c6a4fe821697"
+          ],
+          "message": "Grouped 2 component(s) as PHASE5_GROUP.",
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "groups": [
+          {
+            "id": "56370812-d864-4f70-8eeb-cf46ad1c57b5",
+            "name": "PHASE5_GROUP",
+            "members": [
+              "3072b1c5-48af-426b-97af-becc4aeabe55",
+              "738b7ddb-e616-4cf6-8bc2-c6a4fe821697"
+            ]
+          }
+        ],
+        "rPlace": {
+          "reference": "R_PLACE",
+          "id": "9e910bf0-f26e-4922-aff9-97b23a798d21",
+          "description": "",
+          "visible": false,
+          "x": 230.0,
+          "y": 170.0,
+          "rotation": 0.0,
+          "footprint": "Resistors SMD:RESC2012X60N"
+        }
+      }
+    },
+    {
+      "name": "group_undo",
+      "result": {
+        "undo": "1",
+        "groupRemains": [],
+        "clonesRemain": true
+      }
+    },
+    {
+      "name": "cleanup",
+      "result": {
+        "deleted": [
+          {
+            "reference": "R_P5A",
+            "response": {
+              "success": true,
+              "message": "Deleted component R_P5A (visible in KiCAD UI)",
+              "_backend": "ipc",
+              "_realtime": true
+            }
+          },
+          {
+            "reference": "R_P5B",
+            "response": {
+              "success": true,
+              "message": "Deleted component R_P5B (visible in KiCAD UI)",
+              "_backend": "ipc",
+              "_realtime": true
+            }
+          }
+        ],
+        "removedZones": [],
+        "counts": {
+          "footprints": 73,
+          "zones": 26,
+          "groups": 0,
+          "tracks": 545,
+          "nets": 50
+        }
+      }
+    },
+    {
+      "name": "exports",
+      "result": {
+        "position": {
+          "success": true,
+          "outputPath": "C:\\Users\\MEHRDA~1.MAH\\AppData\\Local\\Temp\\kicad-mcp-phase5-lhx769mc\\positions.csv",
+          "format": "CSV",
+          "units": "mm",
+          "side": "top",
+          "count": 72,
+          "message": "Exported 72 position(s).",
+          "_backend": "ipc",
+          "_realtime": true
+        },
+        "positionHasRPlace": true,
+        "positionHasClone": false,
+        "vrml": {
+          "success": true,
+          "error": null,
+          "message": "Exported VRML from a copy of the saved PCB. Unsaved editor changes are not included.",
+          "source": "saved-pcb-copy",
+          "_backend": "external"
+        },
+        "vrmlHeader": "#VRML V2.0 utf8\nDEF TXFM_1 Transform {\n ",
+        "netlist": {
+          "success": false,
+          "error": "NOT_FOUND",
+          "message": "No schematic named ipc-phase3-test.kicad_sch is next to the open PCB. A different schematic in the directory was not used.",
+          "expectedSchematic": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_sch",
+          "_backend": "external",
+          "_realtime": false
+        }
+      }
+    },
+    {
+      "name": "final",
+      "result": {
+        "counts": {
+          "footprints": 73,
+          "zones": 26,
+          "groups": 0,
+          "tracks": 545,
+          "nets": 50
+        },
+        "countsMatch": true,
+        "rPlaceUnchanged": true,
+        "blockedSwig": {
+          "save": 0,
+          "load": 0
+        },
+        "openPaths": [
+          "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_pcb"
+        ],
+        "filesUnchanged": true,
+        "files": {
+          "phase3": {
+            "path": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-phase3-test.kicad_pcb",
+            "size": 1756093,
+            "mtime": 1793522643.266505,
+            "sha256": "383e481737b4c048c9f87335b48ff0fdb381fb47a816262da09930f7ca3d4996"
+          },
+          "original": {
+            "path": "C:\\Users\\mehrdad.f.mahdavi\\Desktop\\IPM\\IPM\\ipc-move-test.kicad_pcb",
+            "size": 1756123,
+            "mtime": 1793520690.2737627,
+            "sha256": "04514a3e851369cee2364171711f0496c63ad3a89a1507cecd9fdbbc1146bbd8"
+          }
+        }
+      }
+    }
+  ],
+  "failures": [],
+  "error": null
+}
